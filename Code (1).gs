@@ -37,6 +37,84 @@ function readJsonFileByName(name) {
   }
 }
 
+// 取得したデータをユーザー別のドライブJSONファイルへ保存（移行）する
+function migrateToUserFile(obj) {
+  const fileName = getUserDataFileName();
+  const payload = JSON.stringify(obj);
+  const existing = DriveApp.getFilesByName(fileName);
+  if (existing.hasNext()) {
+    existing.next().setContent(payload);
+  } else {
+    DriveApp.createFile(fileName, payload, MimeType.PLAIN_TEXT);
+  }
+}
+
+// 文字列がアプリのデータJSONっぽいか判定してパースする（違えば null）
+function tryParseAppJson(v) {
+  if (typeof v !== 'string') return null;
+  const t = v.trim();
+  if (t.length < 10 || t.charAt(0) !== '{') return null;
+  if (t.indexOf('"data"') < 0 && t.indexOf('"settings"') < 0 && t.indexOf('"notes"') < 0) return null;
+  try {
+    const obj = JSON.parse(t);
+    return (obj && typeof obj === 'object') ? obj : null;
+  } catch (e) {
+    return null;
+  }
+}
+
+// パース済みオブジェクトを移行先バッファへ取り込む（settings/data/notes をマージ）
+function mergeAppData(target, obj) {
+  let picked = false;
+  if (obj.settings && typeof obj.settings === 'object') { Object.assign(target.settings, obj.settings); picked = true; }
+  if (obj.data     && typeof obj.data     === 'object') { Object.assign(target.data,     obj.data);     picked = true; }
+  if (obj.notes    && Array.isArray(obj.notes))         { target.notes = target.notes.concat(obj.notes); picked = true; }
+  return picked;
+}
+
+// バインドされたスプレッドシート内から、旧アプリのデータ（JSON）を探し出す
+// 形式が不明でも、全シート・全セルを走査して data/settings/notes を含むJSON文字列を検出する
+function findSpreadsheetData() {
+  let ss = null;
+  try { ss = SpreadsheetApp.getActiveSpreadsheet(); } catch (e) { ss = null; }
+  if (!ss) return null;
+
+  const merged = { settings: {}, data: {}, notes: [] };
+  let found = false;
+
+  // 1) 全シートのセルを走査
+  const sheets = ss.getSheets();
+  for (let s = 0; s < sheets.length; s++) {
+    let values;
+    try { values = sheets[s].getDataRange().getValues(); } catch (e) { continue; }
+    for (let r = 0; r < values.length; r++) {
+      for (let c = 0; c < values[r].length; c++) {
+        const obj = tryParseAppJson(values[r][c]);
+        if (obj && mergeAppData(merged, obj)) found = true;
+      }
+    }
+  }
+
+  // 2) 念のため PropertiesService（ドキュメント／スクリプト）も確認
+  if (!found) {
+    const stores = [];
+    try { stores.push(PropertiesService.getDocumentProperties()); } catch (e) {}
+    try { stores.push(PropertiesService.getScriptProperties());   } catch (e) {}
+    for (let i = 0; i < stores.length; i++) {
+      const store = stores[i];
+      if (!store) continue;
+      let keys = [];
+      try { keys = store.getKeys(); } catch (e) { continue; }
+      for (let k = 0; k < keys.length; k++) {
+        const obj = tryParseAppJson(store.getProperty(keys[k]));
+        if (obj && mergeAppData(merged, obj)) found = true;
+      }
+    }
+  }
+
+  return found ? merged : null;
+}
+
 // データをドライブのJSONファイルから読み込む
 function loadDataFromServer() {
   const fileName = getUserDataFileName();
@@ -49,24 +127,60 @@ function loadDataFromServer() {
     return current;
   }
 
-  // 3) ユーザー別ファイルが無い or 空のときは、旧形式ファイルから移行を試みる
+  // 3) 旧形式のドライブJSONファイルから移行を試みる
   //    （空のユーザー別ファイルが先に作られてしまっても、古いデータを取りこぼさない）
   for (let i = 0; i < LEGACY_DATA_FILE_NAMES.length; i++) {
     const legacy = readJsonFileByName(LEGACY_DATA_FILE_NAMES[i]);
     if (legacy && !isEmptyData(legacy)) {
-      // ユーザー別ファイルへ移行保存（既にあれば上書き、無ければ新規作成）
-      const existing = DriveApp.getFilesByName(fileName);
-      if (existing.hasNext()) {
-        existing.next().setContent(JSON.stringify(legacy));
-      } else {
-        DriveApp.createFile(fileName, JSON.stringify(legacy), MimeType.PLAIN_TEXT);
-      }
+      migrateToUserFile(legacy);
       return legacy;
     }
   }
 
-  // 4) どこにもデータが無ければ、現在のファイル内容（空）か初期値を返す
+  // 4) ドライブに無ければ、バインドされたスプレッドシートから移行を試みる
+  //    （最初期はスプレッドシートのセルに保存していたケースに対応）
+  const fromSheet = findSpreadsheetData();
+  if (fromSheet && !isEmptyData(fromSheet)) {
+    migrateToUserFile(fromSheet);
+    return fromSheet;
+  }
+
+  // 5) どこにもデータが無ければ、現在のファイル内容（空）か初期値を返す
   return current || { settings: {}, data: {}, notes: [] };
+}
+
+// 【診断用】スプレッドシートの中身を調べてログに出す
+//  形式が分からないとき、GASエディタでこの関数を実行して結果を確認してください。
+function inspectSpreadsheetData() {
+  let ss = null;
+  try { ss = SpreadsheetApp.getActiveSpreadsheet(); } catch (e) {}
+  if (!ss) {
+    Logger.log('このスクリプトはスプレッドシートにバインドされていません（getActiveSpreadsheet が取得できません）。');
+    return;
+  }
+  Logger.log('スプレッドシート名: ' + ss.getName());
+  Logger.log('URL: ' + ss.getUrl());
+  const sheets = ss.getSheets();
+  Logger.log('シート数: ' + sheets.length);
+  for (let s = 0; s < sheets.length; s++) {
+    const sh = sheets[s];
+    Logger.log('── シート「' + sh.getName() + '」 行:' + sh.getLastRow() + ' 列:' + sh.getLastColumn());
+    let values;
+    try { values = sh.getDataRange().getValues(); } catch (e) { continue; }
+    for (let r = 0; r < values.length; r++) {
+      for (let c = 0; c < values[r].length; c++) {
+        const v = values[r][c];
+        if (typeof v === 'string' && v.length > 40) {
+          const isJson = tryParseAppJson(v) ? '★アプリJSONの可能性' : '';
+          Logger.log('  [' + (r+1) + ',' + (c+1) + '] 文字数:' + v.length + ' 先頭60字: ' + v.substring(0, 60) + ' ' + isJson);
+        }
+      }
+    }
+  }
+  const detected = findSpreadsheetData();
+  Logger.log(detected
+    ? '▶ 自動検出できました。data件数:' + Object.keys(detected.data || {}).length + ' notes件数:' + (detected.notes ? detected.notes.length : 0)
+    : '▶ アプリのJSONデータは自動検出できませんでした（表形式で保存されている可能性があります）。');
 }
 
 // データをドライブのJSONファイルに保存する
