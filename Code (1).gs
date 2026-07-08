@@ -49,53 +49,84 @@ function migrateToUserFile(obj) {
   }
 }
 
-// 文字列がアプリのデータJSONっぽいか判定してパースする（違えば null）
-function tryParseAppJson(v) {
+// 文字列をJSONとしてパースする（失敗したら null）
+function tryParseJson(v) {
   if (typeof v !== 'string') return null;
   const t = v.trim();
-  if (t.length < 10 || t.charAt(0) !== '{') return null;
-  if (t.indexOf('"data"') < 0 && t.indexOf('"settings"') < 0 && t.indexOf('"notes"') < 0) return null;
+  if (t.length < 2) return null;
+  if (t.charAt(0) !== '{' && t.charAt(0) !== '[') return null;
   try {
-    const obj = JSON.parse(t);
-    return (obj && typeof obj === 'object') ? obj : null;
+    return JSON.parse(t);
   } catch (e) {
     return null;
   }
 }
 
-// パース済みオブジェクトを移行先バッファへ取り込む（settings/data/notes をマージ）
-function mergeAppData(target, obj) {
-  let picked = false;
-  if (obj.settings && typeof obj.settings === 'object') { Object.assign(target.settings, obj.settings); picked = true; }
-  if (obj.data     && typeof obj.data     === 'object') { Object.assign(target.data,     obj.data);     picked = true; }
-  if (obj.notes    && Array.isArray(obj.notes))         { target.notes = target.notes.concat(obj.notes); picked = true; }
-  return picked;
+// 走査したキー・値をアプリデータへ取り込む
+function assignAppField(target, key, parsed) {
+  key = String(key).trim().toLowerCase();
+  if (parsed == null) return false;
+  if (key === 'settings' && typeof parsed === 'object' && !Array.isArray(parsed)) {
+    Object.assign(target.settings, parsed); return true;
+  }
+  if (key === 'data' && typeof parsed === 'object' && !Array.isArray(parsed)) {
+    Object.assign(target.data, parsed); return true;
+  }
+  if (key === 'notes' && Array.isArray(parsed)) {
+    target.notes = parsed; return true;
+  }
+  return false;
 }
 
-// バインドされたスプレッドシート内から、旧アプリのデータ（JSON）を探し出す
-// 形式が不明でも、全シート・全セルを走査して data/settings/notes を含むJSON文字列を検出する
+// バインドされたスプレッドシートから、旧アプリのデータ（JSON）を探し出す
+// 旧形式は「A列＝キー名(settings/data/notes)／B列＝そのJSON」という表になっている。
+// 全シートを走査し、キー名セルの隣（右・または下）のJSONを取り込む。
+// 1セルに丸ごとの {settings,data,notes} が入っている形式にもフォールバック対応する。
 function findSpreadsheetData() {
   let ss = null;
   try { ss = SpreadsheetApp.getActiveSpreadsheet(); } catch (e) { ss = null; }
   if (!ss) return null;
 
-  const merged = { settings: {}, data: {}, notes: [] };
+  const result = { settings: {}, data: {}, notes: [] };
   let found = false;
-
-  // 1) 全シートのセルを走査
   const sheets = ss.getSheets();
+
   for (let s = 0; s < sheets.length; s++) {
     let values;
     try { values = sheets[s].getDataRange().getValues(); } catch (e) { continue; }
+
     for (let r = 0; r < values.length; r++) {
       for (let c = 0; c < values[r].length; c++) {
-        const obj = tryParseAppJson(values[r][c]);
-        if (obj && mergeAppData(merged, obj)) found = true;
+        const cell = values[r][c];
+        if (typeof cell !== 'string') continue;
+        const key = cell.trim().toLowerCase();
+
+        // (A) キー＝バリュー形式：「settings / data / notes」というキー名セル
+        if (key === 'settings' || key === 'data' || key === 'notes') {
+          let raw = null;
+          if (c + 1 < values[r].length && typeof values[r][c + 1] === 'string') {
+            raw = values[r][c + 1];                       // 右隣を優先
+          } else if (r + 1 < values.length && typeof values[r + 1][c] === 'string') {
+            raw = values[r + 1][c];                       // なければ下
+          }
+          const parsed = tryParseJson(raw);
+          if (parsed != null && assignAppField(result, key, parsed)) { found = true; continue; }
+        }
+
+        // (B) フォールバック：1セルに {settings,data,notes} 丸ごと
+        if (cell.indexOf('"data"') >= 0 || cell.indexOf('"settings"') >= 0 || cell.indexOf('"notes"') >= 0) {
+          const whole = tryParseJson(cell);
+          if (whole && typeof whole === 'object' && !Array.isArray(whole)) {
+            if (assignAppField(result, 'settings', whole.settings)) found = true;
+            if (assignAppField(result, 'data', whole.data)) found = true;
+            if (assignAppField(result, 'notes', whole.notes)) found = true;
+          }
+        }
       }
     }
   }
 
-  // 2) 念のため PropertiesService（ドキュメント／スクリプト）も確認
+  // (C) 予備：PropertiesService（旧版が使っていた可能性）
   if (!found) {
     const stores = [];
     try { stores.push(PropertiesService.getDocumentProperties()); } catch (e) {}
@@ -106,13 +137,28 @@ function findSpreadsheetData() {
       let keys = [];
       try { keys = store.getKeys(); } catch (e) { continue; }
       for (let k = 0; k < keys.length; k++) {
-        const obj = tryParseAppJson(store.getProperty(keys[k]));
-        if (obj && mergeAppData(merged, obj)) found = true;
+        const parsed = tryParseJson(store.getProperty(keys[k]));
+        if (assignAppField(result, keys[k], parsed)) found = true;
       }
     }
   }
 
-  return found ? merged : null;
+  return found ? result : null;
+}
+
+// 【手動実行用】スプレッドシートの旧データをドライブJSONへ一度だけ移行する。
+//  再デプロイ前に、GASエディタでこの関数を選んで実行しておくと確実です。
+function migrateSpreadsheetToDrive() {
+  const fromSheet = findSpreadsheetData();
+  if (!fromSheet || isEmptyData(fromSheet)) {
+    Logger.log('スプレッドシートからアプリのデータを検出できませんでした。inspectSpreadsheetData() で中身を確認してください。');
+    return '検出できませんでした';
+  }
+  migrateToUserFile(fromSheet);
+  const msg = '移行完了 → ' + getUserDataFileName()
+    + '（data: ' + Object.keys(fromSheet.data).length + '件, notes: ' + fromSheet.notes.length + '件）';
+  Logger.log(msg);
+  return msg;
 }
 
 // データをドライブのJSONファイルから読み込む
@@ -171,7 +217,7 @@ function inspectSpreadsheetData() {
       for (let c = 0; c < values[r].length; c++) {
         const v = values[r][c];
         if (typeof v === 'string' && v.length > 40) {
-          const isJson = tryParseAppJson(v) ? '★アプリJSONの可能性' : '';
+          const isJson = tryParseJson(v) ? '★JSONの可能性' : '';
           Logger.log('  [' + (r+1) + ',' + (c+1) + '] 文字数:' + v.length + ' 先頭60字: ' + v.substring(0, 60) + ' ' + isJson);
         }
       }
