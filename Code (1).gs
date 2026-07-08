@@ -12,38 +12,61 @@ function doGet() {
     .addMetaTag('viewport', 'width=device-width, initial-scale=1');
 }
 
-// 同名ファイルのうちゴミ箱に入っていないものを返す
-// （DriveApp.getFilesByName はゴミ箱内のファイルも返すため、そのまま使うと
-//   削除済みファイルへ保存してしまいデータが消えたように見える）
-function findActiveFileByName(fileName) {
-  const files = DriveApp.getFilesByName(fileName);
-  while (files.hasNext()) {
-    const file = files.next();
-    if (!file.isTrashed()) return file;
+// 旧バージョンで使っていた保存ファイル名（新しい順に探索する）
+const LEGACY_DATA_FILE_NAMES = [
+  "weekly_plan_data.json",     // 2代目（ユーザー共通）
+  "週案アプリ_保存データ.json"  // 元祖
+];
+
+// データが実質空かどうかを判定する（移行の要否チェックに使う）
+function isEmptyData(obj) {
+  if (!obj) return true;
+  const dataEmpty  = !obj.data  || Object.keys(obj.data).length === 0;
+  const notesEmpty = !obj.notes || obj.notes.length === 0;
+  return dataEmpty && notesEmpty;
+}
+
+// ファイル名で最初に見つかったファイルの中身をパースして返す（無ければ null）
+function readJsonFileByName(name) {
+  const files = DriveApp.getFilesByName(name);
+  if (!files.hasNext()) return null;
+  try {
+    return JSON.parse(files.next().getBlob().getDataAsString());
+  } catch (e) {
+    return null;
   }
-  return null;
 }
 
 // データをドライブのJSONファイルから読み込む
 function loadDataFromServer() {
   const fileName = getUserDataFileName();
-  const file = findActiveFileByName(fileName);
-  if (file) {
-    const content = file.getBlob().getDataAsString();
-    return JSON.parse(content);
+
+  // 1) ユーザー別ファイルを読む
+  const current = readJsonFileByName(fileName);
+
+  // 2) 中身があればそのまま返す（正常系）
+  if (current && !isEmptyData(current)) {
+    return current;
   }
 
-  // 旧形式（fixed filename）のデータがあれば移行する
-  const legacy = findActiveFileByName("weekly_plan_data.json");
-  if (legacy) {
-    const content = legacy.getBlob().getDataAsString();
-    const parsed = JSON.parse(content);
-    // 新ファイルとして保存（移行）
-    DriveApp.createFile(fileName, JSON.stringify(parsed), MimeType.PLAIN_TEXT);
-    return parsed;
+  // 3) ユーザー別ファイルが無い or 空のときは、旧形式ファイルから移行を試みる
+  //    （空のユーザー別ファイルが先に作られてしまっても、古いデータを取りこぼさない）
+  for (let i = 0; i < LEGACY_DATA_FILE_NAMES.length; i++) {
+    const legacy = readJsonFileByName(LEGACY_DATA_FILE_NAMES[i]);
+    if (legacy && !isEmptyData(legacy)) {
+      // ユーザー別ファイルへ移行保存（既にあれば上書き、無ければ新規作成）
+      const existing = DriveApp.getFilesByName(fileName);
+      if (existing.hasNext()) {
+        existing.next().setContent(JSON.stringify(legacy));
+      } else {
+        DriveApp.createFile(fileName, JSON.stringify(legacy), MimeType.PLAIN_TEXT);
+      }
+      return legacy;
+    }
   }
 
-  return { settings: {}, data: {}, notes: [] };
+  // 4) どこにもデータが無ければ、現在のファイル内容（空）か初期値を返す
+  return current || { settings: {}, data: {}, notes: [] };
 }
 
 // データをドライブのJSONファイルに保存する
@@ -55,8 +78,9 @@ function saveDataToServer(settings, data, notes) {
     notes: notes
   });
 
-  const file = findActiveFileByName(fileName);
-  if (file) {
+  const files = DriveApp.getFilesByName(fileName);
+  if (files.hasNext()) {
+    const file = files.next();
     file.setContent(payload);
   } else {
     DriveApp.createFile(fileName, payload, MimeType.PLAIN_TEXT);
@@ -70,8 +94,7 @@ function callGeminiApi(prompt) {
   if (!apiKey) {
     return { error: 'API_KEY_NOT_SET' };
   }
-  // gemini-1.5-flash は提供終了のため現行モデルを使用
-  const url = 'https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=' + apiKey;
+  const url = 'https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=' + apiKey;
   const payload = {
     contents: [{ parts: [{ text: prompt }] }],
     generationConfig: { temperature: 0.7, maxOutputTokens: 2048 }
@@ -100,8 +123,7 @@ function uploadFileFromForm(formObject) {
     let fileBlob = formObject.myFile;
     let folder = getOrCreateFolder(ATTACHMENT_FOLDER_NAME);
     let file = folder.createFile(fileBlob);
-    // 児童の記録等を含む可能性があるため、リンクを知っている全員への公開はしない
-    // （本人のドライブ内ファイルとしてそのまま開ける）
+    file.setSharing(DriveApp.Access.ANYONE_WITH_LINK, DriveApp.Permission.VIEW);
     return { url: file.getUrl(), name: file.getName() };
   } catch (error) {
     return { error: error.toString() };
@@ -113,9 +135,7 @@ function searchDriveFiles(keyword) {
   let result = [];
   if (!keyword || keyword.trim() === "") return result;
   try {
-    // クエリ文字列を壊す文字（\ と "）をエスケープする
-    const safeKeyword = keyword.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
-    let files = DriveApp.searchFiles('title contains "' + safeKeyword + '" and trashed = false');
+    let files = DriveApp.searchFiles('title contains "' + keyword + '" and trashed = false');
     let count = 0;
     while (files.hasNext() && count < 30) {
       let f = files.next();
