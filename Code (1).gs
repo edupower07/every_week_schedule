@@ -62,26 +62,60 @@ function tryParseJson(v) {
   }
 }
 
-// 走査したキー・値をアプリデータへ取り込む
-function assignAppField(target, key, parsed) {
-  key = String(key).trim().toLowerCase();
+// パース済みJSONの「中身」から settings / data / notes のどれかを判別する
+//  A列のキー名に頼らず、値の形だけで分類できる（列見出しが違っても動く）。
+function classifyJson(parsed) {
+  if (parsed == null) return null;
+
+  // notes：オブジェクトの配列（content / folder / date を持つ）
+  if (Array.isArray(parsed)) {
+    if (parsed.length === 0) return null;
+    const el = parsed[0];
+    if (el && typeof el === 'object' &&
+        ('content' in el || 'folder' in el || 'date' in el)) return 'notes';
+    return null;
+  }
+
+  if (typeof parsed !== 'object') return null;
+  const keys = Object.keys(parsed);
+  if (keys.length === 0) return null;
+
+  // settings：設定特有のキーを持つ
+  const settingsSig = ['configByYear', 'foldersByYear', 'noteFolders',
+                       'folderDetailsByYear', 'noteFolderDetails'];
+  for (let i = 0; i < settingsSig.length; i++) {
+    if (parsed.hasOwnProperty(settingsSig[i])) return 'settings';
+  }
+
+  // data：トップキーが日付ID（2026-04-10...）か、値が授業セルの形
+  const k0 = keys[0];
+  if (/^\d{4}-\d{2}-\d{2}/.test(String(k0))) return 'data';
+  const v0 = parsed[k0];
+  if (v0 && typeof v0 === 'object' &&
+      ('subject' in v0 || 'record' in v0 || 'isSplit' in v0 || 'attachments' in v0)) return 'data';
+
+  // 予備：year だけ持つ設定
+  if (parsed.hasOwnProperty('year')) return 'settings';
+  return null;
+}
+
+// 判別結果に応じてアプリデータへ取り込む
+function assignAppField(target, kind, parsed) {
   if (parsed == null) return false;
-  if (key === 'settings' && typeof parsed === 'object' && !Array.isArray(parsed)) {
+  if (kind === 'settings' && typeof parsed === 'object' && !Array.isArray(parsed)) {
     Object.assign(target.settings, parsed); return true;
   }
-  if (key === 'data' && typeof parsed === 'object' && !Array.isArray(parsed)) {
+  if (kind === 'data' && typeof parsed === 'object' && !Array.isArray(parsed)) {
     Object.assign(target.data, parsed); return true;
   }
-  if (key === 'notes' && Array.isArray(parsed)) {
+  if (kind === 'notes' && Array.isArray(parsed)) {
     target.notes = parsed; return true;
   }
   return false;
 }
 
-// バインドされたスプレッドシートから、旧アプリのデータ（JSON）を探し出す
-// 旧形式は「A列＝キー名(settings/data/notes)／B列＝そのJSON」という表になっている。
-// 全シートを走査し、キー名セルの隣（右・または下）のJSONを取り込む。
-// 1セルに丸ごとの {settings,data,notes} が入っている形式にもフォールバック対応する。
+// バインドされたスプレッドシートから、旧アプリのデータ（JSON）を探し出す。
+// A列のキー名には頼らず、JSONの中身を見て settings/data/notes を判別して取り込む。
 function findSpreadsheetData() {
   let ss = null;
   try { ss = SpreadsheetApp.getActiveSpreadsheet(); } catch (e) { ss = null; }
@@ -98,30 +132,22 @@ function findSpreadsheetData() {
     for (let r = 0; r < values.length; r++) {
       for (let c = 0; c < values[r].length; c++) {
         const cell = values[r][c];
-        if (typeof cell !== 'string') continue;
-        const key = cell.trim().toLowerCase();
+        if (typeof cell !== 'string' || cell.length < 2) continue;
+        const parsed = tryParseJson(cell);
+        if (parsed == null) continue;
 
-        // (A) キー＝バリュー形式：「settings / data / notes」というキー名セル
-        if (key === 'settings' || key === 'data' || key === 'notes') {
-          let raw = null;
-          if (c + 1 < values[r].length && typeof values[r][c + 1] === 'string') {
-            raw = values[r][c + 1];                       // 右隣を優先
-          } else if (r + 1 < values.length && typeof values[r + 1][c] === 'string') {
-            raw = values[r + 1][c];                       // なければ下
-          }
-          const parsed = tryParseJson(raw);
-          if (parsed != null && assignAppField(result, key, parsed)) { found = true; continue; }
+        // (A) 1セルに丸ごと {settings,data,notes} が入っている形式
+        if (!Array.isArray(parsed) &&
+            (parsed.hasOwnProperty('settings') || parsed.hasOwnProperty('data') || parsed.hasOwnProperty('notes'))) {
+          if (assignAppField(result, 'settings', parsed.settings)) found = true;
+          if (assignAppField(result, 'data', parsed.data)) found = true;
+          if (assignAppField(result, 'notes', parsed.notes)) found = true;
+          continue;
         }
 
-        // (B) フォールバック：1セルに {settings,data,notes} 丸ごと
-        if (cell.indexOf('"data"') >= 0 || cell.indexOf('"settings"') >= 0 || cell.indexOf('"notes"') >= 0) {
-          const whole = tryParseJson(cell);
-          if (whole && typeof whole === 'object' && !Array.isArray(whole)) {
-            if (assignAppField(result, 'settings', whole.settings)) found = true;
-            if (assignAppField(result, 'data', whole.data)) found = true;
-            if (assignAppField(result, 'notes', whole.notes)) found = true;
-          }
-        }
+        // (B) 中身から種類を判別して取り込む（A列ラベル不要）
+        const kind = classifyJson(parsed);
+        if (kind && assignAppField(result, kind, parsed)) found = true;
       }
     }
   }
@@ -138,7 +164,8 @@ function findSpreadsheetData() {
       try { keys = store.getKeys(); } catch (e) { continue; }
       for (let k = 0; k < keys.length; k++) {
         const parsed = tryParseJson(store.getProperty(keys[k]));
-        if (assignAppField(result, keys[k], parsed)) found = true;
+        const kind = classifyJson(parsed);
+        if (kind && assignAppField(result, kind, parsed)) found = true;
       }
     }
   }
@@ -217,8 +244,9 @@ function inspectSpreadsheetData() {
       for (let c = 0; c < values[r].length; c++) {
         const v = values[r][c];
         if (typeof v === 'string' && v.length > 40) {
-          const isJson = tryParseJson(v) ? '★JSONの可能性' : '';
-          Logger.log('  [' + (r+1) + ',' + (c+1) + '] 文字数:' + v.length + ' 先頭60字: ' + v.substring(0, 60) + ' ' + isJson);
+          const parsed = tryParseJson(v);
+          const kind = parsed ? (classifyJson(parsed) || '判別不能') : '非JSON';
+          Logger.log('  [' + (r+1) + ',' + (c+1) + '] 文字数:' + v.length + ' 判別:' + kind + ' 先頭60字: ' + v.substring(0, 60));
         }
       }
     }
