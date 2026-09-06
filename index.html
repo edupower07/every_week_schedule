@@ -94,6 +94,16 @@
     .color-radio-label input:checked + .color-radio-span { border-color: #5c4e3c; box-shadow: 0 2px 5px rgba(0,0,0,0.2); transform: scale(1.05); }
     .note-folder-group { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin-bottom: 10px; }
     .note-folder-group select { padding: 6px; border: 1px solid #d3c5b5; border-radius: 4px; font-family: inherit; max-width: 150px; }
+    .cell-content.not-draggable { cursor: pointer; }
+    .flash-cell { animation: flashCell 1.8s ease-out; }
+    @keyframes flashCell { 0% { box-shadow: inset 0 0 0 3px #e8c96a; background-color: #fff3c4; } 100% { box-shadow: none; } }
+    #syncIndicator { position: fixed; bottom: 20px; left: 20px; background: #cc0033; color: #fff; padding: 8px 14px; border-radius: 4px; font-size: 0.8rem; font-weight: bold; box-shadow: 0 4px 10px rgba(0,0,0,0.2); z-index: 2000; cursor: pointer; display: none; }
+    #undoToast { position: fixed; bottom: 64px; right: 20px; background: #5c4e3c; color: #fff; padding: 8px 12px; border-radius: 4px; font-size: 0.85rem; box-shadow: 0 4px 10px rgba(0,0,0,0.2); z-index: 2000; display: none; align-items: center; gap: 10px; }
+    #undoToast button { background: #fff; color: #5c4e3c; border: none; border-radius: 4px; padding: 4px 10px; font-weight: bold; cursor: pointer; font-family: inherit; }
+    .loading-error { display: none; margin-top: 15px; text-align: center; color: #cc0033; font-size: 0.9rem; max-width: 460px; line-height: 1.6; white-space: pre-wrap; padding: 0 10px; }
+    .loading-error .action-btn { margin: 12px 4px 0; }
+    .weekly-count { text-align: right; font-size: 0.75rem; color: #7a6a58; margin-top: 6px; }
+    .note-link { color: #0055cc; word-break: break-all; }
     @media screen and (max-width: 768px) {
       body { padding: 5px; }
       .notebook { padding: 15px 10px; border-radius: 6px; }
@@ -112,11 +122,20 @@
 <body>
 
   <div id="loadingScreen">
-    <div class="spinner"></div>
-    <div style="color: #7a6a58; font-weight: bold;">データを処理しています...</div>
+    <div class="spinner" id="loadingSpinner"></div>
+    <div style="color: #7a6a58; font-weight: bold;" id="loadingMessage">データを処理しています...</div>
+    <div class="loading-error" id="loadingError">
+      <div id="loadingErrorText"></div>
+      <div>
+        <button class="action-btn action-btn-highlight" onclick="loadFromServer()">🔄 再試行</button>
+        <button class="action-btn" onclick="location.reload()">ページを再読み込み</button>
+      </div>
+    </div>
   </div>
 
   <div id="saveToast">クラウドに保存しました ✅</div>
+  <div id="syncIndicator" onclick="retrySaveNow()" title="クリックで今すぐ再保存">⚠️ 未保存の変更があります（クリックで再試行）</div>
+  <div id="undoToast"><span id="undoToastMsg"></span><button onclick="performUndo()">↩ 元に戻す</button></div>
 
   <form id="uploadForm" style="display: none;">
     <input type="file" id="fileUploadInput" name="myFile" accept="image/*,application/pdf" onchange="handleFileUpload(event)">
@@ -161,6 +180,7 @@
         </thead>
         <tbody id="timetableBody"></tbody>
       </table>
+      <div class="weekly-count" id="weeklyCount"></div>
     </div>
   </div>
 
@@ -271,6 +291,11 @@
           <button class="btn-small" onclick="openNoteSelectionModal()" style="background:#f0f8ff; border-color:#0055cc; color:#0055cc;">📝 ノート添付</button>
         </div>
       </div>
+      <div style="display:flex; gap:6px; flex-wrap:wrap; align-items:center; margin-top:10px; padding-top:10px; border-top:1px dashed #d3c5b5;">
+        <span style="font-size:0.75rem; color:#7a6a58;">別のコマへ複製:</span>
+        <button class="btn-small" onclick="copyCurrentCell()">📋 このコマをコピー</button>
+        <button class="btn-small" id="pasteCellBtn" onclick="pasteIntoCurrentCell()" disabled>📥 コピーしたコマを貼り付け</button>
+      </div>
       <div class="btn-area">
         <button class="btn-cancel" onclick="closeInputModal()">キャンセル</button>
         <div style="display:flex; gap:8px;">
@@ -307,6 +332,9 @@
         <label><input type="radio" name="printMode" value="kanji" checked> 漢字（標準）</label>
         <label><input type="radio" name="printMode" value="hiragana"> ひらがな（低学年向け）</label>
       </div>
+      <div class="form-group" style="margin-top:6px;">
+        <label style="font-weight:normal; cursor:pointer;"><input type="checkbox" id="printMorningRow"> 朝自習の行も印刷する</label>
+      </div>
       <p style="font-size:0.75rem; color:#cc0033; margin-top:10px;">
         ※「ひらがな」を選択すると、曜日や標準の教科名がひらがなに変換されます。<br>
         ※ご自身で入力した単元名や連絡文は変換されません。
@@ -322,7 +350,7 @@
   <div id="summaryModal" class="modal-overlay">
     <div class="modal-box large">
       <h3>時数集計表 (<span id="summaryGradeDisplay"></span>)</h3>
-      <p style="font-size: 0.75rem; color: #666;">※4/1〜翌3/31の範囲で集計します。</p>
+      <p style="font-size: 0.75rem; color: #666;">※4/1〜翌3/31の範囲で集計します。「表示中の週」は画面に出している週のコマ数です。</p>
       <div style="overflow-x:auto;"><table class="summary-table" id="summaryTableElement"></table></div>
       <div style="text-align:center; margin-top:15px; display:flex; gap:8px; justify-content:center; flex-wrap:wrap;">
         <button class="action-btn action-btn-highlight" onclick="geminiAnalyzeHours()">✨ Geminiで時数を分析・助言</button>
@@ -339,7 +367,7 @@
     <div class="modal-box large">
       <h3>🔍 全体検索</h3>
       <div class="form-group" style="display:flex; gap:10px;">
-        <input type="text" id="searchInput" placeholder="検索キーワードを入力">
+        <input type="text" id="searchInput" placeholder="検索キーワードを入力" onkeydown="if(event.key==='Enter') executeSearch();">
         <button class="btn-save" onclick="executeSearch()">検索</button>
       </div>
       <div id="searchResultsArea" style="max-height: 50vh; overflow-y: auto;"></div>
@@ -387,7 +415,7 @@
       <h3>設定</h3>
       <p style="font-size:0.75rem; color:#cc0033; margin-top:0;">※年度を変更すると、その年度専用の設定やフォルダに切り替わります。</p>
       <div style="display:flex; gap:10px;">
-        <div class="form-group"><label>年度</label><input type="number" id="setYear" onchange="changeSettingYear()"></div>
+        <div class="form-group"><label>年度</label><input type="number" id="setYear" min="2000" max="2100" step="1" onchange="changeSettingYear()"></div>
         <div class="form-group"><label>学年</label>
           <select id="setGrade">
             <option value="1">1年</option><option value="2">2年</option><option value="3">3年</option>
@@ -467,6 +495,9 @@
       "6": { "国語":175, "社会":105, "算数":175, "理科":105, "音楽":50, "図画工作":50, "家庭":55, "体育":90, "道徳":35, "総合的な学習の時間":70, "外国語":70 }
     };
 
+    // 特別活動（学級活動）の標準時数：1年は34、2年以上は35
+    const specialActivityHours = { "1": 34, "2": 35, "3": 35, "4": 35, "5": 35, "6": 35 };
+
     const subjectColors = {
       "国語": "color-kokugo", "社会": "color-shakai", "算数": "color-sansu", "理科": "color-rika",
       "生活": "color-seikatsu", "音楽": "color-ongaku", "図画工作": "color-zuko", "家庭": "color-katei",
@@ -494,84 +525,100 @@
     let uploadMode = "";
     let editingNoteId = null;
     let lastSummary = null;
-    const appSettings = { year: "2026", foldersByYear: {}, folderDetailsByYear: {}, configByYear: {} };
+    const appSettings = { year: getSchoolYear(new Date()), foldersByYear: {}, folderDetailsByYear: {}, configByYear: {} };
     let holidaysData = {};
 
+    // ===== クラウド同期の状態 =====
+    let serverRevision = null;        // サーバーから読み込んだデータの版番号（null = 未読み込み → 保存しない）
+    let lastSyncedSnapshot = null;    // 最後にサーバーと一致した状態（競合時の差分計算に使う）
+    let saveTimer = null;
+    let saveInFlight = false;
+    let savePending = false;
+    let hasUnsavedChanges = false;
+    let syncFailCount = 0;
+    let saveFailed = false;
+    let undoSnapshot = null;          // 直前の破壊的操作の前の状態（元に戻す用）
+    let cellClipboard = null;         // コマのコピー＆貼り付け用
+    const DRAFT_STORAGE_KEY = 'weeklyPlan_unsavedDraft_v1';
+    const HOLIDAY_CACHE_KEY = 'weeklyPlan_holidayCache_v1';
+
     window.onload = () => {
-      // 保険：万一固まっても10秒でローディングを解除する
-      setTimeout(function() {
-        const ls = document.getElementById('loadingScreen');
-        if (ls && ls.style.display !== 'none') {
-          ls.style.display = 'none';
-          console.warn('読み込みがタイムアウトしました。サーバー接続を確認してください。');
-        }
-      }, 10000);
-
-      fetch('https://holidays-jp.github.io/api/v1/date.json')
-        .then(res => res.json())
-        .then(data => { holidaysData = data; if(document.getElementById('cell-0-1')) updateView(); })
-        .catch(err => console.log('祝日データ取得エラー'));
-
+      loadHolidays();
       try { buildBaseTimetableSetup(); } catch (e) { console.error('時間割UI構築エラー:', e); }
-
-      try {
-        if (typeof google !== 'undefined' && google.script && google.script.run) {
-          google.script.run
-            .withSuccessHandler(initializeData)
-            .withFailureHandler(err => {
-              console.error('サーバー読み込みエラー:', err);
-              alert("クラウドからの読み込みに失敗しました。\n空の状態で起動します。\n\n詳細: " + (err && err.message ? err.message : err));
-              initializeData(null);
-            })
-            .loadDataFromServer();
-        } else {
-          initializeData(null);
-        }
-      } catch (e) {
-        console.error('起動エラー:', e);
-        initializeData(null);
-      }
+      try { showWeekend = localStorage.getItem('weeklyPlan_showWeekend') === '1'; } catch (e) {}
+      if (hasGoogleBackend()) { loadFromServer(); } else { initializeData(null); }
     };
 
+    function hasGoogleBackend() { return !!(typeof google !== 'undefined' && google.script && google.script.run); }
+
+    // 祝日データ：取得できたら端末に保存し、学校のネットワーク等で取れないときは前回の保存分を使う
+    function loadHolidays() {
+      try {
+        const cached = JSON.parse(localStorage.getItem(HOLIDAY_CACHE_KEY) || 'null');
+        if (cached && cached.data) holidaysData = cached.data;
+      } catch (e) {}
+      fetch('https://holidays-jp.github.io/api/v1/date.json')
+        .then(res => res.json())
+        .then(data => {
+          holidaysData = data;
+          try { localStorage.setItem(HOLIDAY_CACHE_KEY, JSON.stringify({ at: Date.now(), data: data })); } catch (e) {}
+          if (document.getElementById('cell-0-1')) updateView();
+        })
+        .catch(err => console.log('祝日データ取得エラー（保存済みのデータがあればそれを使います）'));
+    }
+
+    // サーバーからデータを読み込む。失敗したときは操作できないまま「再試行」を案内する。
+    // （以前は失敗しても空の状態で使えてしまい、その状態で保存するとクラウドのデータが空で上書きされた）
+    let loadTimeoutTimer = null;
+    function loadFromServer() {
+      const ls = document.getElementById('loadingScreen');
+      if (ls) ls.style.display = 'flex';
+      setLoadingState('loading', 'データを読み込んでいます...');
+      clearTimeout(loadTimeoutTimer);
+      loadTimeoutTimer = setTimeout(function() {
+        setLoadingState('slow', '読み込みに時間がかかっています。サーバーの応答を待っています…\n（しばらく待っても進まない場合は「再試行」を押してください）');
+      }, 15000);
+      google.script.run
+        .withSuccessHandler(function(serverData) { clearTimeout(loadTimeoutTimer); initializeData(serverData); })
+        .withFailureHandler(function(err) {
+          clearTimeout(loadTimeoutTimer);
+          console.error('サーバー読み込みエラー:', err);
+          setLoadingState('error', 'クラウドからの読み込みに失敗しました。データ保護のため、読み込みが完了するまで操作できません。\n\n' + (err && err.message ? err.message : err));
+        })
+        .loadDataFromServer();
+    }
+
+    function setLoadingState(state, message) {
+      const spinner = document.getElementById('loadingSpinner');
+      const msg = document.getElementById('loadingMessage');
+      const errBox = document.getElementById('loadingError');
+      const errText = document.getElementById('loadingErrorText');
+      const showDetail = (state === 'error' || state === 'slow');
+      if (msg) msg.innerText = state === 'error' ? '読み込みエラー' : (state === 'slow' ? 'データを読み込んでいます...' : (message || ''));
+      if (spinner) spinner.style.display = state === 'error' ? 'none' : 'block';
+      if (errBox) errBox.style.display = showDetail ? 'block' : 'none';
+      if (errText) errText.innerText = showDetail ? message : '';
+    }
+
+    let appInitialized = false;
     function initializeData(serverData) {
+     if (appInitialized) return;   // 再試行が重なって2回呼ばれても二重に初期化しない
      try {
       if (serverData) {
         if (serverData.settings) Object.assign(appSettings, serverData.settings);
         if (serverData.data) Object.assign(appData, serverData.data);
         if (serverData.notes && Array.isArray(serverData.notes)) appNotes.push(...serverData.notes);
+        serverRevision = (serverData.meta && typeof serverData.meta.revision === 'number') ? serverData.meta.revision : 0;
       }
+      appInitialized = true;
 
-      const currentSetYear = appSettings.year || new Date().getFullYear().toString();
-
+      if (!appSettings.year) appSettings.year = getSchoolYear(new Date());
+      const currentSetYear = appSettings.year;
       ensureYearDefaults(currentSetYear);
+      normalizeLoadedData(currentSetYear);
 
-      Object.keys(appData).forEach(function(key) {
-        if (appData[key].subject === '特別の教科道徳') appData[key].subject = '道徳';
-        if (appData[key].subject2 === '特別の教科道徳') appData[key].subject2 = '道徳';
-        if (appData[key].record && typeof appData[key].record === 'string' && appData[key].record.includes('[📎添付:')) {
-          let migrated = migrateAttachments(appData[key].record, appData[key].attachments);
-          appData[key].record = migrated.text;
-          appData[key].attachments = migrated.attachments;
-        }
-      });
-
-      appNotes.forEach(function(note) {
-        if (note.content && typeof note.content === 'string' && note.content.includes('[📎添付:')) {
-          let migrated = migrateAttachments(note.content, note.attachments);
-          note.content = migrated.text;
-          note.attachments = migrated.attachments;
-        }
-        if (!note.year) {
-          const parts = (note.date || "").split('/');
-          if(parts.length >= 2) {
-            const y = parseInt(parts[0]);
-            const m = parseInt(parts[1]);
-            note.year = (m <= 3) ? (y - 1).toString() : y.toString();
-          } else {
-            note.year = currentSetYear;
-          }
-        }
-      });
+      // ここまでがサーバーと一致している状態。以後の変更はこれとの差分として扱う（競合時の統合に使う）
+      lastSyncedSnapshot = takeSnapshot();
 
       const yearInput = document.getElementById('setYear');
       if (yearInput) yearInput.value = currentSetYear;
@@ -579,6 +626,7 @@
       // 基本時間割セレクトに選択肢を入れてから値を復元する（逆順だと値が消える）
       updateSubjectDropdown();
       changeSettingYear();
+      updateHeaderTitle();
 
       const day = currentMonday.getDay();
       currentMonday.setDate(currentMonday.getDate() - day + (day === 0 ? -6 : 1));
@@ -587,13 +635,54 @@
       updateView();
       applyWeekendDisplay();
 
+      window.addEventListener('beforeunload', function(e) {
+        if (hasUnsavedChanges || saveInFlight) { e.preventDefault(); e.returnValue = ''; }
+      });
+
+      const loadingScreen = document.getElementById('loadingScreen');
+      if (loadingScreen) loadingScreen.style.display = 'none';
+
+      restoreUnsavedDraft();      // 前回保存できなかった変更があれば復元を案内
+      checkSchoolYearRollover();  // 新年度になっていれば切り替えを案内
      } catch (e) {
        console.error('初期化エラー:', e);
-       alert('初期化中にエラーが発生しました：\n' + (e && e.message ? e.message : e) + '\n\n（空の状態で起動します。バックアップがあれば設定から読み込めます）');
-     } finally {
+       alert('初期化中にエラーが発生しました：\n' + (e && e.message ? e.message : e) + '\n\nページを再読み込みしてください。バックアップがあれば設定から読み込めます。');
        const loadingScreen = document.getElementById('loadingScreen');
        if (loadingScreen) loadingScreen.style.display = 'none';
      }
+    }
+
+    // 読み込んだデータの形式を最新に揃える（旧表記の教科名・本文中の添付リンク・ノートの年度）
+    function normalizeLoadedData(currentSetYear) {
+      Object.keys(appData).forEach(function(key) {
+        const d = appData[key];
+        if (!d || typeof d !== 'object') { delete appData[key]; return; }
+        if (d.subject === '特別の教科道徳') d.subject = '道徳';
+        if (d.subject2 === '特別の教科道徳') d.subject2 = '道徳';
+        if (d.record && typeof d.record === 'string' && d.record.includes('[📎添付:')) {
+          const migrated = migrateAttachments(d.record, d.attachments);
+          d.record = migrated.text;
+          d.attachments = migrated.attachments;
+        }
+      });
+      appNotes.forEach(function(note) {
+        if (!note || typeof note !== 'object') return;
+        if (note.content && typeof note.content === 'string' && note.content.includes('[📎添付:')) {
+          const migrated = migrateAttachments(note.content, note.attachments);
+          note.content = migrated.text;
+          note.attachments = migrated.attachments;
+        }
+        if (!note.year) {
+          const parts = (note.date || "").split('/');
+          if (parts.length >= 2) {
+            const y = parseInt(parts[0]);
+            const m = parseInt(parts[1]);
+            note.year = (m <= 3) ? (y - 1).toString() : y.toString();
+          } else {
+            note.year = currentSetYear;
+          }
+        }
+      });
     }
 
     // Escapeキーで最前面のモーダルを閉じる
@@ -619,7 +708,7 @@
     });
 
     function getConfig() {
-      const y = appSettings.year || new Date().getFullYear().toString();
+      const y = currentSchoolYear();
       return appSettings.configByYear[y] || { grade: "5", className: "", termType: "2", countMorning: false, baseTimetable: {} };
     }
 
@@ -654,25 +743,217 @@
       showToast._timer = setTimeout(function() { toast.style.opacity = 0; }, isError ? 4000 : 2000);
     }
 
-    let syncFailCount = 0;
+    // ===== クラウド保存 =====
+    // ・連続した変更は 0.4 秒待ってまとめて送る（デバウンス）
+    // ・送信は常に1本だけ。送信中に変更があれば、終わってからもう一度送る（直列化）
+    // ・版番号（revision）で他端末との競合を検知し、サーバーの最新にこちらの変更分だけを重ねて再保存する
+    function takeSnapshot() { return JSON.parse(JSON.stringify({ settings: appSettings, data: appData, notes: appNotes })); }
+
     function syncToServer() {
-      if (typeof google !== 'undefined' && google.script && google.script.run) {
-        google.script.run.withSuccessHandler(function() {
-          syncFailCount = 0;
-          showToast("クラウドに保存しました ✅", false);
-        }).withFailureHandler(function(err) {
-          syncFailCount++;
-          if (syncFailCount <= 3) {
-            showToast(`保存に失敗しました。自動で再試行します…（${syncFailCount}/3）`, true);
-            setTimeout(syncToServer, 2000 * syncFailCount);
-          } else {
-            syncFailCount = 0;
-            showToast("保存に失敗しました ⚠️ 通信環境を確認し、設定画面からバックアップの書き出しをおすすめします", true);
-          }
-        }).saveDataToServer(appSettings, appData, appNotes);
-      } else {
-        showToast("ローカルのため保存されません", false);
+      hasUnsavedChanges = true;
+      if (!hasGoogleBackend()) { showToast("ローカルのため保存されません", false); return; }
+      if (serverRevision === null || lastSyncedSnapshot === null) {
+        showToast("データの読み込みが完了していないため保存できません。ページを再読み込みしてください", true);
+        return;
       }
+      clearTimeout(saveTimer);
+      saveTimer = setTimeout(flushSave, 400);
+    }
+
+    function retrySaveNow() { syncFailCount = 0; clearTimeout(saveTimer); flushSave(); }
+
+    function flushSave() {
+      if (saveInFlight) { savePending = true; return; }
+      if (!hasGoogleBackend() || serverRevision === null) return;
+      saveInFlight = true; savePending = false;
+      const payload = takeSnapshot();
+      const baseRevision = serverRevision;
+      google.script.run
+        .withSuccessHandler(function(res) { onSaveResult(res, payload, baseRevision); })
+        .withFailureHandler(onSaveFailure)
+        .saveDataToServer(payload.settings, payload.data, payload.notes, baseRevision);
+    }
+
+    function onSaveResult(res, payload, baseRevision) {
+      saveInFlight = false;
+      if (res && res.ok) {
+        serverRevision = res.revision;
+        lastSyncedSnapshot = payload;
+        syncFailCount = 0;
+        saveFailed = false;
+        clearUnsavedDraft();
+        if (savePending) { flushSave(); return; }
+        hasUnsavedChanges = false;
+        updateSyncIndicator();
+        showToast("クラウドに保存しました ✅", false);
+        return;
+      }
+      if (res && res.conflict && res.current) {
+        // 他の端末（または別タブ）で更新されていた：サーバーの最新に、こちらの変更分だけを重ねて再保存する
+        const serverBase = normalizeSnapshot(res.current);
+        const merged = mergeLocalChanges(serverBase, lastSyncedSnapshot, takeSnapshot());
+        serverRevision = (res.current.meta && typeof res.current.meta.revision === 'number') ? res.current.meta.revision : 0;
+        lastSyncedSnapshot = serverBase;
+        adoptState(merged);
+        syncFailCount++;
+        if (syncFailCount <= 5) {
+          showToast("別の端末での変更と統合しました。保存し直します…", false);
+          flushSave();
+        } else {
+          syncFailCount = 0; saveFailed = true; persistUnsavedDraft(); updateSyncIndicator();
+          showToast("保存の競合が解消できませんでした。ページを再読み込みしてください", true);
+        }
+        return;
+      }
+      onSaveFailure(new Error(res && res.error ? res.error : 'サーバーから不明な応答が返りました'));
+    }
+
+    function onSaveFailure(err) {
+      saveInFlight = false;
+      syncFailCount++;
+      console.error('保存エラー:', err);
+      if (syncFailCount <= 3) {
+        showToast(`保存に失敗しました。自動で再試行します…（${syncFailCount}/3）`, true);
+        clearTimeout(saveTimer);
+        saveTimer = setTimeout(flushSave, 2000 * syncFailCount);
+      } else {
+        syncFailCount = 0;
+        saveFailed = true;
+        persistUnsavedDraft();
+        updateSyncIndicator();
+        showToast("保存に失敗しました ⚠️ 変更はこの端末に一時保存しました。通信環境を確認し、左下の表示から再試行してください", true);
+      }
+    }
+
+    function updateSyncIndicator() {
+      const el = document.getElementById('syncIndicator');
+      if (el) el.style.display = saveFailed ? 'block' : 'none';
+    }
+
+    // ----- 保存できなかった変更を端末に残す（次回起動時に復元を案内） -----
+    function persistUnsavedDraft() {
+      try {
+        localStorage.setItem(DRAFT_STORAGE_KEY, JSON.stringify({ at: Date.now(), base: lastSyncedSnapshot, snapshot: takeSnapshot() }));
+      } catch (e) { console.warn('下書きの一時保存に失敗:', e); }
+    }
+    function clearUnsavedDraft() { try { localStorage.removeItem(DRAFT_STORAGE_KEY); } catch (e) {} }
+    function restoreUnsavedDraft() {
+      let draft = null;
+      try { draft = JSON.parse(localStorage.getItem(DRAFT_STORAGE_KEY) || 'null'); } catch (e) { draft = null; }
+      if (!draft || !draft.snapshot || !draft.base) { clearUnsavedDraft(); return; }
+      const changes = countLocalChanges(draft.base, draft.snapshot);
+      if (changes === 0) { clearUnsavedDraft(); return; }
+      const when = new Date(draft.at || Date.now());
+      const whenStr = `${when.getMonth()+1}/${when.getDate()} ${String(when.getHours()).padStart(2,'0')}:${String(when.getMinutes()).padStart(2,'0')}`;
+      const msg = `前回（${whenStr}）クラウドに保存できなかった変更が ${changes} 件、この端末に残っています。\n今のデータに復元しますか？\n（「キャンセル」を選ぶと破棄されます）`;
+      if (confirm(msg)) {
+        const merged = mergeLocalChanges(takeSnapshot(), draft.base, draft.snapshot);
+        adoptState(merged);
+        clearUnsavedDraft();
+        showToast(`${changes} 件の変更を復元しました。保存します…`, false);
+        syncToServer();
+      } else {
+        clearUnsavedDraft();
+      }
+    }
+
+    // ----- 差分と統合 -----
+    function normalizeSnapshot(s) {
+      const o = s || {};
+      return JSON.parse(JSON.stringify({ settings: o.settings || {}, data: o.data || {}, notes: Array.isArray(o.notes) ? o.notes : [] }));
+    }
+    function sameJson(a, b) { return JSON.stringify(a === undefined ? null : a) === JSON.stringify(b === undefined ? null : b); }
+
+    // base → local で変わった箇所を列挙する（授業コマはキー単位、ノートはID単位、設定は年度単位）
+    function diffSnapshots(base, local) {
+      base = normalizeSnapshot(base); local = normalizeSnapshot(local);
+      const changes = { data: {}, notes: { upsert: [], remove: [] }, settings: {} };
+      const dataKeys = new Set(Object.keys(base.data).concat(Object.keys(local.data)));
+      dataKeys.forEach(function(k) {
+        if (!sameJson(base.data[k], local.data[k])) changes.data[k] = (k in local.data) ? local.data[k] : null;
+      });
+      const baseNotes = {}; base.notes.forEach(function(n) { if (n && n.id != null) baseNotes[String(n.id)] = n; });
+      const localNotes = {}; local.notes.forEach(function(n) { if (n && n.id != null) localNotes[String(n.id)] = n; });
+      Object.keys(localNotes).forEach(function(id) { if (!sameJson(baseNotes[id], localNotes[id])) changes.notes.upsert.push(localNotes[id]); });
+      Object.keys(baseNotes).forEach(function(id) { if (!(id in localNotes)) changes.notes.remove.push(id); });
+      const perYear = ['configByYear', 'foldersByYear', 'folderDetailsByYear'];
+      const settingKeys = new Set(Object.keys(base.settings).concat(Object.keys(local.settings)));
+      settingKeys.forEach(function(k) {
+        if (perYear.includes(k)) {
+          const b = base.settings[k] || {}, l = local.settings[k] || {};
+          const years = new Set(Object.keys(b).concat(Object.keys(l)));
+          years.forEach(function(y) {
+            if (!sameJson(b[y], l[y])) {
+              if (!changes.settings[k]) changes.settings[k] = { perYear: true, years: {} };
+              changes.settings[k].years[y] = (y in l) ? l[y] : null;
+            }
+          });
+        } else if (!sameJson(base.settings[k], local.settings[k])) {
+          changes.settings[k] = { perYear: false, value: (k in local.settings) ? local.settings[k] : null };
+        }
+      });
+      return changes;
+    }
+    function countLocalChanges(base, local) {
+      const c = diffSnapshots(base, local);
+      let n = Object.keys(c.data).length + c.notes.upsert.length + c.notes.remove.length;
+      Object.keys(c.settings).forEach(function(k) { n += c.settings[k].perYear ? Object.keys(c.settings[k].years).length : 1; });
+      return n;
+    }
+    // server の状態に、base → local の変更分だけを重ねた新しい状態を返す
+    function mergeLocalChanges(server, base, local) {
+      const result = normalizeSnapshot(server);
+      const c = diffSnapshots(base, local);
+      Object.keys(c.data).forEach(function(k) { if (c.data[k] === null) delete result.data[k]; else result.data[k] = c.data[k]; });
+      const removeSet = new Set(c.notes.remove);
+      result.notes = result.notes.filter(function(n) { return !(n && n.id != null && removeSet.has(String(n.id))); });
+      c.notes.upsert.forEach(function(n) {
+        const idx = result.notes.findIndex(function(x) { return x && x.id != null && String(x.id) === String(n.id); });
+        if (idx === -1) result.notes.unshift(n); else result.notes[idx] = n;
+      });
+      Object.keys(c.settings).forEach(function(k) {
+        const ch = c.settings[k];
+        if (!ch.perYear) { if (ch.value === null) delete result.settings[k]; else result.settings[k] = ch.value; return; }
+        if (!result.settings[k] || typeof result.settings[k] !== 'object') result.settings[k] = {};
+        Object.keys(ch.years).forEach(function(y) { if (ch.years[y] === null) delete result.settings[k][y]; else result.settings[k][y] = ch.years[y]; });
+      });
+      return result;
+    }
+    // 画面上のデータをまるごと置き換えて再描画する
+    function adoptState(snapshot) {
+      const s = normalizeSnapshot(snapshot);
+      Object.keys(appData).forEach(function(k) { delete appData[k]; });
+      Object.assign(appData, s.data);
+      appNotes.length = 0; appNotes.push(...s.notes);
+      Object.keys(appSettings).forEach(function(k) { delete appSettings[k]; });
+      Object.assign(appSettings, s.settings);
+      if (!appSettings.year) appSettings.year = getSchoolYear(new Date());
+      ensureYearDefaults(currentSchoolYear());
+      const yearInput = document.getElementById('setYear'); if (yearInput) yearInput.value = currentSchoolYear();
+      updateSubjectDropdown();
+      changeSettingYear();
+      updateHeaderTitle();
+      if (document.getElementById('cell-0-1')) updateView();
+      const noteModal = document.getElementById('noteModal');
+      if (noteModal && noteModal.style.display === 'flex') { updateNoteYearSelect(); updateNoteFolderSelects(); renderNotes(); }
+    }
+
+    // ===== 元に戻す（破壊的な操作の直前の状態を1回分だけ保持） =====
+    function rememberForUndo(label) { undoSnapshot = { label: label, state: takeSnapshot() }; }
+    function offerUndo(msg) {
+      const t = document.getElementById('undoToast'); if (!t || !undoSnapshot) return;
+      document.getElementById('undoToastMsg').innerText = msg;
+      t.style.display = 'flex';
+      clearTimeout(offerUndo._timer);
+      offerUndo._timer = setTimeout(function() { t.style.display = 'none'; }, 10000);
+    }
+    function performUndo() {
+      const t = document.getElementById('undoToast'); if (t) t.style.display = 'none';
+      if (!undoSnapshot) return;
+      adoptState(undoSnapshot.state);
+      undoSnapshot = null;
+      syncToServer();
+      showToast("元に戻しました ↩", false);
     }
 
     function migrateAttachments(text, existingAttachments) {
@@ -696,32 +977,88 @@
       const sourceKey = event.dataTransfer.getData("text/plain"); if (!sourceKey) return;
       const targetKey = getDataKey(targetDay, targetPeriod); if (sourceKey === targetKey) return;
       const sourceData = appData[sourceKey];
-      if (sourceData) {
-        appData[targetKey] = JSON.parse(JSON.stringify(sourceData));
-        if (appData[targetKey].attachments) { appData[targetKey].attachments.forEach(function(a) { a.id = Date.now() + Math.random(); }); }
-      } else { delete appData[targetKey]; }
-      renderCell(targetDay, targetPeriod); syncToServer();
+      if (!sourceData) return;   // 空のコマをドロップしても何もしない（以前はドロップ先を消していた）
+      const sourcePeriod = sourceKey.split('-')[3];
+      if (isMemoPeriod(sourcePeriod) !== isMemoPeriod(targetPeriod)) { showToast("授業のコマと記録欄の間ではコピーできません", true); return; }
+      const hadTarget = !!appData[targetKey];
+      if (hadTarget) rememberForUndo('コマの上書き');
+      appData[targetKey] = JSON.parse(JSON.stringify(sourceData));
+      if (appData[targetKey].attachments) { appData[targetKey].attachments.forEach(function(a) { a.id = Date.now() + Math.random(); }); }
+      renderCell(targetDay, targetPeriod); updateWeeklyCount(); syncToServer();
+      if (hadTarget) offerUndo('コマを上書きしました');
     }
 
     function changeWeek(offsetWeeks) { currentMonday.setDate(currentMonday.getDate() + (offsetWeeks * 7)); updateView(); }
     function jumpToToday() { currentMonday = new Date(); const day = currentMonday.getDay(); currentMonday.setDate(currentMonday.getDate() - day + (day === 0 ? -6 : 1)); updateView(); }
-    function jumpToDate(dateStr) { const targetDate = new Date(dateStr.replace(/-/g, '/')); const day = targetDate.getDay(); targetDate.setDate(targetDate.getDate() - day + (day === 0 ? -6 : 1)); currentMonday = targetDate; updateView(); closeSearchModal(); }
+    function jumpToDate(dateStr, period) {
+      const targetDate = new Date(String(dateStr || '').replace(/-/g, '/'));
+      if (isNaN(targetDate.getTime())) return;
+      const day = targetDate.getDay();
+      const monday = new Date(targetDate); monday.setDate(targetDate.getDate() - day + (day === 0 ? -6 : 1));
+      currentMonday = monday; updateView(); closeSearchModal();
+      if (period) {   // 検索結果から来たときは該当のコマを点滅させて示す
+        const dIdx = (day === 0) ? 6 : day - 1;
+        if (dIdx >= 5 && !showWeekend) toggleWeekend();
+        const cell = document.getElementById(`cell-${dIdx}-${period}`);
+        if (cell) {
+          cell.classList.remove('flash-cell'); void cell.offsetWidth; cell.classList.add('flash-cell');
+          try { cell.scrollIntoView({ block: 'center', behavior: 'smooth' }); } catch (e) {}
+        }
+      }
+    }
     function jumpToSelectedDate() { const val = document.getElementById('jumpDateInput').value; if(val) jumpToDate(val); }
 
     function triggerFileUpload(mode) { uploadMode = mode; document.getElementById('fileUploadInput').click(); }
     function handleFileUpload(event) {
       const file = event.target.files[0]; if (!file) return;
-      if (typeof google === 'undefined' || !google.script || !google.script.run) {
+      if (!hasGoogleBackend()) {
         alert("ローカル環境ではファイルをアップロードできません。");
         event.target.value = '';
         return;
       }
       document.getElementById('loadingScreen').style.display = 'flex';
-      google.script.run.withSuccessHandler(onUploadSuccess).withFailureHandler(function(err) {
-        document.getElementById('loadingScreen').style.display = 'none';
-        document.getElementById('fileUploadInput').value = '';
-        alert("アップロードに失敗しました：" + (err && err.message ? err.message : err));
-      }).uploadFileFromForm(document.getElementById('uploadForm'));
+      setLoadingState('loading', 'ファイルをアップロードしています...');
+      const finish = function() { document.getElementById('loadingScreen').style.display = 'none'; document.getElementById('fileUploadInput').value = ''; };
+      const fail = function(err) { finish(); alert("アップロードに失敗しました：" + (err && err.message ? err.message : err)); };
+      const sendOriginal = function() {
+        google.script.run.withSuccessHandler(function(res) { finish(); onUploadSuccess(res); }).withFailureHandler(fail)
+          .uploadFileFromForm(document.getElementById('uploadForm'));
+      };
+      // 大きな写真はブラウザ側で縮小してから送る（アップロードを速くし、ドライブの容量も節約）
+      if (/^image\/(jpeg|png|webp)$/i.test(file.type) && file.size > 800 * 1024) {
+        shrinkImage(file, 1600, 0.85).then(function(shrunk) {
+          if (!shrunk) { sendOriginal(); return; }
+          google.script.run.withSuccessHandler(function(res) { finish(); onUploadSuccess(res); }).withFailureHandler(fail)
+            .uploadFileData(shrunk.name, shrunk.mime, shrunk.base64);
+        }).catch(function() { sendOriginal(); });
+      } else {
+        sendOriginal();
+      }
+    }
+    // 画像を長辺 maxSide px 以下に縮小して base64 にする（縮小の効果が無い・失敗した場合は null）
+    function shrinkImage(file, maxSide, quality) {
+      return new Promise(function(resolve) {
+        const img = new Image();
+        const url = URL.createObjectURL(file);
+        img.onload = function() {
+          try {
+            const scale = Math.min(1, maxSide / Math.max(img.naturalWidth, img.naturalHeight));
+            const canvas = document.createElement('canvas');
+            canvas.width = Math.max(1, Math.round(img.naturalWidth * scale));
+            canvas.height = Math.max(1, Math.round(img.naturalHeight * scale));
+            canvas.getContext('2d').drawImage(img, 0, 0, canvas.width, canvas.height);
+            const outMime = file.type === 'image/png' ? 'image/png' : 'image/jpeg';
+            const dataUrl = canvas.toDataURL(outMime, quality);
+            URL.revokeObjectURL(url);
+            const base64 = dataUrl.split(',')[1] || '';
+            if (!base64 || base64.length * 0.75 >= file.size) { resolve(null); return; }
+            const ext = outMime === 'image/png' ? '.png' : '.jpg';
+            resolve({ name: file.name.replace(/\.[^.]+$/, '') + ext, mime: outMime, base64: base64 });
+          } catch (e) { URL.revokeObjectURL(url); resolve(null); }
+        };
+        img.onerror = function() { URL.revokeObjectURL(url); resolve(null); };
+        img.src = url;
+      });
     }
     function onUploadSuccess(res) {
       document.getElementById('loadingScreen').style.display = 'none';
@@ -758,7 +1095,7 @@
       let html = '<div style="display:flex; flex-wrap:wrap; gap:4px; margin-top:4px;">';
       attachments.forEach(function(att) {
         const icon = att.type === 'drive' ? '☁️' : (att.type === 'note' ? '📝' : (att.type === 'url' ? '🔗' : '📎'));
-        if (att.type === 'note') { html += `<span class="attachment-link" onclick="jumpToNote(${att.noteId}); event.stopPropagation(); return false;">${icon} ${escapeHTML(att.name)}</span>`; }
+        if (att.type === 'note') { html += `<span class="attachment-link" data-note-id="${escapeHTML(att.noteId == null ? '' : String(att.noteId))}" onclick="jumpToNote(this.dataset.noteId); event.stopPropagation(); return false;">${icon} ${escapeHTML(att.name)}</span>`; }
         else { html += `<a href="${escapeHTML(safeUrl(att.url))}" target="_blank" rel="noopener" class="attachment-link" onclick="event.stopPropagation();">${icon} ${escapeHTML(att.name)}</a>`; }
       });
       html += '</div>'; return html;
@@ -766,7 +1103,7 @@
 
     function jumpToNote(noteId) {
       if (!noteId) { alert("古い形式の添付データです。恐れ入りますが再度添付し直してください。"); return; }
-      const note = appNotes.find(function(n) { return n.id === noteId; });
+      const note = appNotes.find(function(n) { return String(n.id) === String(noteId); });
       if (!note) { alert("このノートは削除されたか見つかりません。"); return; }
       closeInputModal(); closeSearchModal(); closeNoteSelectionModal();
       openNoteModal(); editNote(noteId);
@@ -777,7 +1114,7 @@
     function executeDriveSearch() {
       const query = document.getElementById('driveSearchInput').value.trim(); if (!query) return;
       document.getElementById('driveSearchResultsArea').innerHTML = '<div class="spinner" style="margin: 20px auto;"></div><p style="text-align:center;">検索中...</p>';
-      if (typeof google !== 'undefined' && google.script && google.script.run) {
+      if (hasGoogleBackend()) {
         google.script.run.withSuccessHandler(function(files) {
           if (files && files.error) { document.getElementById('driveSearchResultsArea').innerHTML = '<p style="text-align:center; color:#cc0033;">検索に失敗しました。</p>'; return; }
           if (!files || files.length === 0) { document.getElementById('driveSearchResultsArea').innerHTML = '<p style="text-align:center;">見つかりませんでした。</p>'; return; }
@@ -794,7 +1131,7 @@
     function addDriveAttachment(url, name) { currentAttachments.push({ id: Date.now(), name: name, url: url, type: 'drive' }); renderEditorAttachments(); closeDriveSearchModal(); }
 
     function openNoteSelectionModal() {
-      const y = appSettings.year || new Date().getFullYear().toString();
+      const y = currentSchoolYear();
       const folders = getYearlyFolders(y);
       let folderHtml = '<option value="all">すべてのフォルダ</option>';
       folders.forEach(function(f) { folderHtml += `<option value="${escapeHTML(f)}">📁 ${escapeHTML(f)}</option>`; });
@@ -806,27 +1143,30 @@
     }
     function closeNoteSelectionModal() { document.getElementById('noteSelectionModal').style.display = 'none'; }
     function executeNoteSelectionSearch() {
-      const year = appSettings.year || new Date().getFullYear().toString();
+      const year = currentSchoolYear();
       const folder = document.getElementById('noteSelectionFolder').value;
       const query = document.getElementById('noteSelectionInput').value.toLowerCase();
       let filtered = appNotes.filter(function(n) { return n.year === year; });
       if (folder !== 'all') { filtered = filtered.filter(function(n) { return (n.folder || '未分類') === folder; }); }
-      if (query) { filtered = filtered.filter(function(n) { return n.content.toLowerCase().includes(query); }); }
+      if (query) { filtered = filtered.filter(function(n) { return (n.content || '').toLowerCase().includes(query); }); }
       const resArea = document.getElementById('noteSelectionResultsArea');
       if (filtered.length === 0) { resArea.innerHTML = '<p style="color:#666; font-size:0.85rem; text-align:center;">該当するノートがありません。</p>'; return; }
+      filtered = sortNotesByDateDesc(filtered);
       resArea.innerHTML = filtered.map(function(n) {
-        const snippet = n.content.length > 30 ? n.content.substring(0, 30) + '...' : n.content;
-        return `<div style="padding: 10px; border-bottom: 1px dashed #e8e6e1; cursor: pointer;" onmouseover="this.style.backgroundColor='#e6f2ff'" onmouseout="this.style.backgroundColor='transparent'" onclick="addNoteAttachment(${n.id})">
-          <div style="font-size:0.75rem; color:#7a6a58; margin-bottom: 4px;">🕒 ${n.date} ｜ 📁 ${escapeHTML(n.folder || '未分類')}</div>
+        const content = n.content || '';
+        const snippet = content.length > 30 ? content.substring(0, 30) + '...' : content;
+        return `<div style="padding: 10px; border-bottom: 1px dashed #e8e6e1; cursor: pointer;" onmouseover="this.style.backgroundColor='#e6f2ff'" onmouseout="this.style.backgroundColor='transparent'" data-id="${escapeHTML(String(n.id))}" onclick="addNoteAttachment(this.dataset.id)">
+          <div style="font-size:0.75rem; color:#7a6a58; margin-bottom: 4px;">🕒 ${escapeHTML(n.date)} ｜ 📁 ${escapeHTML(n.folder || '未分類')}</div>
           <div style="font-size:0.85rem; color:#333; white-space:pre-wrap;">${escapeHTML(snippet)}</div>
         </div>`;
       }).join('');
     }
     function addNoteAttachment(id) {
-      const n = appNotes.find(function(x) { return x.id === id; });
+      const n = appNotes.find(function(x) { return String(x.id) === String(id); });
       if (n) {
-        let snippet = n.content.substring(0, 15); if (n.content.length > 15) snippet += '...';
-        currentAttachments.push({ id: Date.now(), name: "ノート: " + snippet, type: 'note', noteId: id });
+        const content = n.content || '';
+        let snippet = content.substring(0, 15); if (content.length > 15) snippet += '...';
+        currentAttachments.push({ id: Date.now(), name: "ノート: " + snippet, type: 'note', noteId: n.id });
         renderEditorAttachments(); closeNoteSelectionModal();
       }
     }
@@ -844,38 +1184,46 @@
     }
 
     function loadBaseTimetable() {
-      if(!confirm("今週の「月〜金」の「1〜6校時」に、基本の時間割を上書きしますか？\n（既に入力されているデータは消えます）")) return;
       const conf = getConfig();
       const bt = conf.baseTimetable || {};
       if(Object.keys(bt).filter(function(k){ return bt[k]; }).length === 0) { alert("設定画面で基本の時間割が登録されていません。"); return; }
+      if(!confirm("今週の「月〜金」の「1〜6校時」に、基本の時間割を読み込みますか？\n※教科と単元は基本時間割の内容で上書きされます（連絡・記録・添付は残ります）。\n※祝日・休業期間の日はスキップします。")) return;
+      rememberForUndo('基本時間割の読み込み');
+      let applied = 0, skippedDays = 0;
       for(let d=0; d<5; d++) {
+        if (isNonSchoolDay(fmtDate(dateOfWeek(d)))) { skippedDays++; continue; }
         for(let p=1; p<=6; p++) {
-          const sub = conf.baseTimetable[`${d}-${p}`];
+          const sub = bt[`${d}-${p}`];
           if(sub) {
             const key = getDataKey(d, p);
             if(!appData[key]) { appData[key] = { subject:"", unit:"", contact:"", record:"", attachments:[], isSplit:false, subject2:"", unit2:"" }; }
             if(appData[key].subject !== sub) { appData[key].unit = ""; appData[key].isSplit = false; appData[key].subject2 = ""; appData[key].unit2 = ""; }
             appData[key].subject = sub;
+            applied++;
           }
         }
       }
-      updateView(); syncToServer(); alert("基本の時間割を読み込みました。");
+      updateView(); syncToServer();
+      offerUndo(`基本の時間割を読み込みました（${applied}コマ${skippedDays ? `・祝日等 ${skippedDays}日はスキップ` : ''}）`);
     }
 
-    // 先週の時間割（教科・単元・分割）を今週へコピーする。連絡・記録・添付は今週のものを保持。
+    // 先週の時間割（教科・単元・分割）を今週へコピーする。連絡・記録・添付は今週のものを保持。祝日・休業日はスキップ。
     function copyPreviousWeek() {
       const periods = ['morning', 1, 2, 3, 4, 5, 6];
       const targets = [];
+      let skippedDays = 0;
       for (let d = 0; d < 7; d++) {
-        const cur = new Date(currentMonday); cur.setDate(cur.getDate() + d);
+        const cur = dateOfWeek(d);
+        if (isNonSchoolDay(fmtDate(cur))) { skippedDays++; continue; }
         const prev = new Date(cur); prev.setDate(prev.getDate() - 7);
         periods.forEach(function(p) {
           const prevData = appData[`${fmtDate(prev)}-${p}`];
           if (prevData && prevData.subject) targets.push({ d: d, p: p, src: prevData });
         });
       }
-      if (targets.length === 0) { alert("先週に入力された授業がありません。"); return; }
-      if (!confirm(`先週の時間割（${targets.length}コマ）を今週にコピーしますか？\n※教科・単元・分割設定をコピーします。今週すでに入力済みの教科・単元は上書きされますが、連絡・記録・添付はそのまま残ります。`)) return;
+      if (targets.length === 0) { alert("先週に入力された授業がありません。" + (skippedDays ? "\n（今週の祝日・休業日にあたる曜日はコピー対象外です）" : "")); return; }
+      if (!confirm(`先週の時間割（${targets.length}コマ）を今週にコピーしますか？\n※教科・単元・分割設定をコピーします。今週すでに入力済みの教科・単元は上書きされますが、連絡・記録・添付はそのまま残ります。${skippedDays ? `\n※祝日・休業期間の ${skippedDays}日はスキップします。` : ''}`)) return;
+      rememberForUndo('先週コピー');
       targets.forEach(function(t) {
         const key = getDataKey(t.d, t.p);
         if (!appData[key]) { appData[key] = { subject:"", unit:"", contact:"", record:"", attachments:[], isSplit:false, subject2:"", unit2:"" }; }
@@ -886,13 +1234,14 @@
         appData[key].unit2 = t.src.unit2 || "";
       });
       updateView(); syncToServer();
-      showToast(`先週から ${targets.length} コマをコピーしました ✅`, false);
+      offerUndo(`先週から ${targets.length} コマをコピーしました`);
     }
 
     function openExcelImportModal() { document.getElementById('excelPasteArea').value = ""; document.getElementById('excelImportModal').style.display = 'flex'; }
     function closeExcelImportModal() { document.getElementById('excelImportModal').style.display = 'none'; }
     function executeExcelImport() {
       const text = document.getElementById('excelPasteArea').value.trim(); if (!text) { alert("データが入力されていません。"); return; }
+      rememberForUndo('Excel一括貼付');
       const rows = text.split(/\r\n|\n|\r/);
       rows.forEach(function(row, rIdx) {
         if(rIdx < 6) {
@@ -910,17 +1259,18 @@
           });
         }
       });
-      closeExcelImportModal(); updateView(); syncToServer(); alert("Excelのデータを反映しました。");
+      closeExcelImportModal(); updateView(); syncToServer(); offerUndo("Excelのデータを反映しました");
     }
 
     function openPrintModal() { document.getElementById('printModal').style.display = 'flex'; }
     function closePrintModal() { document.getElementById('printModal').style.display = 'none'; }
     function executePrint() {
       const modeRadio = document.querySelector('input[name="printMode"]:checked'); if (!modeRadio) return;
-      closePrintModal(); printTimetable(modeRadio.value);
+      const morningEl = document.getElementById('printMorningRow');
+      closePrintModal(); printTimetable(modeRadio.value, !!(morningEl && morningEl.checked));
     }
 
-    function printTimetable(mode) {
+    function printTimetable(mode, includeMorning) {
       const isH = (mode === 'hiragana');
       const hMap = {
         "国語":"こくご","算数":"さんすう","理科":"りか","社会":"しゃかい","生活":"せいかつ",
@@ -928,7 +1278,7 @@
         "総合的な学習の時間":"そうごう","外国語活動":"がいこくごかつどう","外国語":"がいこくご",
         "学活１":"がっかつ","学活２":"がっかつ","学活３":"がっかつ","学活":"がっかつ",
         "児童会活動":"じどうかい","クラブ活動":"くらぶかつどう","学校行事":"がっこうぎょうじ",
-        "その他":"そのた","行事":"ぎょうじ","連絡":"れんらく",
+        "その他":"そのた","行事":"ぎょうじ","連絡":"れんらく","朝自習":"あさじしゅう",
         "月":"げつ","火":"か","水":"すい","木":"もく","金":"きん","土":"ど","日":"にち"
       };
       const mt = function(s) { return (isH && hMap[s]) ? hMap[s] : (s || ""); };
@@ -960,7 +1310,8 @@
       };
 
       // ページ全体に収まるよう、行の高さをmmで指定
-      const lessonH = isLand ? 23 : 35;
+      const morningH = includeMorning ? (isLand ? 9 : 12) : 0;
+      const lessonH = isLand ? (includeMorning ? 21 : 23) : (includeMorning ? 33 : 35);
       const gyojiH  = isLand ? 12 : 16;
       const renrakuH= isLand ? 15 : 20;
       const headH   = isLand ? 8  : 9;
@@ -978,12 +1329,14 @@
       }
 
       // 本体
-      const pNames = {'gyoji':'行事', 'renraku':'連絡'};
+      const pNames = {'gyoji':'行事', 'renraku':'連絡', 'morning':'朝自習'};
       let rows = '';
-      ['gyoji',1,2,3,4,5,6,'renraku'].forEach(function(p){
+      const printPeriods = includeMorning ? ['gyoji','morning',1,2,3,4,5,6,'renraku'] : ['gyoji',1,2,3,4,5,6,'renraku'];
+      printPeriods.forEach(function(p){
         const isMemo = (p==='gyoji'||p==='renraku');
-        const label = isMemo ? mt(pNames[p]) : `<span class="pnum">${p}</span>`;
-        const rowCls = isMemo ? ('memo-row ' + (p==='gyoji'?'r-gyoji':'r-renraku')) : 'lesson-row';
+        const isMorning = (p==='morning');
+        const label = isMemo ? mt(pNames[p]) : (isMorning ? `<span class="pmorning">${mt(pNames[p])}</span>` : `<span class="pnum">${p}</span>`);
+        const rowCls = isMemo ? ('memo-row ' + (p==='gyoji'?'r-gyoji':'r-renraku')) : (isMorning ? 'lesson-row r-morning' : 'lesson-row');
         rows += `<tr class="${rowCls}"><th class="pcol">${label}</th>`;
         for(let d=0; d<maxDays; d++){
           let dt=new Date(currentMonday); dt.setDate(dt.getDate()+d);
@@ -998,7 +1351,7 @@
           } else if (data.isSplit) {
             rows += `<td class="lesson-cell" style="${tint}"><div class="box">${pill(data.subject, true)}<div class="unit">${escapeHTML(data.unit)}</div>${pill(data.subject2, true)}<div class="unit">${escapeHTML(data.unit2)}</div>${data.contact?`<div class="contact">${escapeHTML(data.contact)}</div>`:''}</div></td>`;
           } else {
-            rows += `<td class="lesson-cell" style="${tint}"><div class="box">${pill(data.subject)}<div class="unit">${escapeHTML(data.unit)}</div>${data.contact?`<div class="contact">📣 ${escapeHTML(data.contact)}</div>`:''}</div></td>`;
+            rows += `<td class="lesson-cell" style="${tint}"><div class="box">${pill(data.subject, isMorning)}<div class="unit">${escapeHTML(data.unit)}</div>${data.contact?`<div class="contact">📣 ${escapeHTML(data.contact)}</div>`:''}</div></td>`;
           }
         }
         rows += `</tr>`;
@@ -1006,6 +1359,7 @@
 
       // タイトル（○年○組／日付範囲）
       const conf = getConfig();
+      const weekCount = countWeekLessons();
       const gradeClass = `${conf.grade}年${conf.className || ''}`;
       const sd = new Date(currentMonday);
       const ed = new Date(currentMonday); ed.setDate(ed.getDate() + (maxDays - 1));
@@ -1035,6 +1389,8 @@
         .lesson-row td { height: ${lessonH}mm; }
         .r-gyoji td { height: ${gyojiH}mm; }
         .r-renraku td { height: ${renrakuH}mm; }
+        .r-morning td { height: ${morningH}mm; }
+        .pmorning { font-size: 0.62rem; line-height: 1.1; display: inline-block; }
         .box { height: 100%; overflow: hidden; padding: 4px; }
         .memo-cell .box { text-align: left; font-size: 0.72rem; white-space: pre-wrap; word-break: break-word; line-height: 1.3; }
         .lesson-cell .box { text-align: center; }
@@ -1054,7 +1410,7 @@
         </div>
         <div class="t-rule"></div>
         <table><thead><tr>${head}</tr></thead><tbody>${rows}</tbody></table>
-        <div class="footer"><span>週案＆時数管理ノート</span><span>${sd.getFullYear()}年度</span></div>
+        <div class="footer"><span>週案＆時数管理ノート</span><span>授業 ${weekCount.total}コマ${includeMorning && weekCount.morning ? `／朝自習 ${weekCount.morning}回` : ''}</span><span>${getSchoolYear(sd)}年度</span></div>
         <div class="print-btn-area"><button onclick="window.print();" style="padding:10px 28px; font-size:1.05rem; cursor:pointer; background:#7a6a58; color:#fff; border:none; border-radius:6px; font-family:inherit;">🖨️ 印刷する</button></div>
       </div></body></html>`;
       win.document.write(h); win.document.close();
@@ -1064,30 +1420,30 @@
       const years = [];
       appNotes.forEach(function(n) { if (!years.includes(n.year)) years.push(n.year); });
       years.sort().reverse();
-      const currentSetYear = appSettings.year || new Date().getFullYear().toString();
+      const currentSetYear = currentSchoolYear();
       if (!years.includes(currentSetYear)) years.unshift(currentSetYear);
       const sel = document.getElementById('filterNoteYear');
-      if (sel) { sel.innerHTML = `<option value="all">📅 全年度</option>` + years.map(function(y) { return `<option value="${y}">📅 ${y}年度</option>`; }).join(''); sel.value = currentSetYear; }
+      if (sel) { sel.innerHTML = `<option value="all">📅 全年度</option>` + years.map(function(y) { return `<option value="${escapeHTML(y)}">📅 ${escapeHTML(y)}年度</option>`; }).join(''); sel.value = currentSetYear; }
     }
 
     function updateNoteFolderSelects() {
-      const y = appSettings.year || new Date().getFullYear().toString();
+      const y = currentSchoolYear();
       const parentSel = document.getElementById('newNoteFolderParent');
-      if (parentSel) { parentSel.innerHTML = getRootFolders(y).map(function(f){ return `<option value="${f}">📁 ${escapeHTML(f)}</option>`; }).join(''); }
+      if (parentSel) { parentSel.innerHTML = getRootFolders(y).map(function(f){ return `<option value="${escapeHTML(f)}">📁 ${escapeHTML(f)}</option>`; }).join(''); }
       updateNoteChildSelect('new');
       const filterYearSel = document.getElementById('filterNoteYear');
       const fY = filterYearSel ? filterYearSel.value : y;
       const filterParentSel = document.getElementById('filterNoteFolderParent');
       if (filterParentSel) {
         if (fY === 'all') { filterParentSel.style.display = 'none'; }
-        else { filterParentSel.style.display = 'inline-block'; filterParentSel.innerHTML = `<option value="all">📁 すべて</option>` + getRootFolders(fY).map(function(f){ return `<option value="${f}">📁 ${escapeHTML(f)}</option>`; }).join(''); }
+        else { filterParentSel.style.display = 'inline-block'; filterParentSel.innerHTML = `<option value="all">📁 すべて</option>` + getRootFolders(fY).map(function(f){ return `<option value="${escapeHTML(f)}">📁 ${escapeHTML(f)}</option>`; }).join(''); }
       }
       updateNoteChildSelect('filter');
     }
 
     function updateNoteChildSelect(mode) {
       const filterYearSel = document.getElementById('filterNoteYear');
-      const y = mode === 'new' ? (appSettings.year || new Date().getFullYear().toString()) : (filterYearSel ? filterYearSel.value : "");
+      const y = mode === 'new' ? (currentSchoolYear()) : (filterYearSel ? filterYearSel.value : "");
       const parentSel = document.getElementById(mode === 'new' ? 'newNoteFolderParent' : 'filterNoteFolderParent');
       const p = parentSel ? parentSel.value : "";
       const cSel = document.getElementById(mode === 'new' ? 'newNoteFolderChild' : 'filterNoteFolderChild');
@@ -1096,12 +1452,18 @@
       const childs = getChildFolders(p, y);
       if (childs.length > 0) {
         cSel.style.display = 'inline-block';
-        cSel.innerHTML = (mode==='filter' ? '<option value="all">（すべて）</option>' : '<option value="">（なし）</option>') + childs.map(function(f){ return `<option value="${f}">📄 ${escapeHTML(f)}</option>`; }).join('');
+        cSel.innerHTML = (mode==='filter' ? '<option value="all">（すべて）</option>' : '<option value="">（なし）</option>') + childs.map(function(f){ return `<option value="${escapeHTML(f)}">📄 ${escapeHTML(f)}</option>`; }).join('');
       } else { cSel.style.display = 'none'; }
       if (mode === 'filter') renderNotes();
     }
 
-    function openNoteModal() { updateNoteYearSelect(); updateNoteFolderSelects(); renderNotes(); uploadMode = 'note'; document.getElementById('noteModal').style.display = 'flex'; }
+    function openNoteModal() {
+      uploadMode = 'note';
+      if (!editingNoteId) { currentAttachments = []; }   // 直前に開いていたコマの添付が新しいノートに混入しないようにする
+      renderEditorAttachments();
+      updateNoteYearSelect(); updateNoteFolderSelects(); renderNotes();
+      document.getElementById('noteModal').style.display = 'flex';
+    }
     function closeNoteModal() { cancelNoteEdit(); document.getElementById('noteModal').style.display = 'none'; }
 
     function saveNote() {
@@ -1114,17 +1476,17 @@
       const now = new Date();
       const dStr = `${now.getFullYear()}/${String(now.getMonth()+1).padStart(2,'0')}/${String(now.getDate()).padStart(2,'0')} ${String(now.getHours()).padStart(2,'0')}:${String(now.getMinutes()).padStart(2,'0')}`;
       if (editingNoteId) {
-        const idx = appNotes.findIndex(function(n) { return n.id === editingNoteId; });
+        const idx = appNotes.findIndex(function(n) { return String(n.id) === String(editingNoteId); });
         if (idx !== -1) { appNotes[idx].content = content; appNotes[idx].folder = folder; appNotes[idx].attachments = [...currentAttachments]; }
       } else {
-        appNotes.unshift({ id: Date.now(), date: dStr, content: content, folder: folder, attachments: [...currentAttachments], year: appSettings.year });
+        appNotes.unshift({ id: Date.now(), date: dStr, content: content, folder: folder, attachments: [...currentAttachments], year: currentSchoolYear() });
       }
       cancelNoteEdit(); renderNotes(); syncToServer();
     }
 
     function editNote(id) {
-      const n = appNotes.find(function(x) { return x.id === id; }); if (!n) return;
-      editingNoteId = id;
+      const n = appNotes.find(function(x) { return String(x.id) === String(id); }); if (!n) return;
+      editingNoteId = n.id;
       document.getElementById('newNoteInput').value = n.content;
       currentAttachments = [...(n.attachments || [])];
       renderEditorAttachments();
@@ -1149,6 +1511,15 @@
       document.getElementById('cancelEditBtn').style.display = "none";
     }
 
+    function deleteNote(id) {
+      const idx = appNotes.findIndex(function(x) { return String(x.id) === String(id); });
+      if (idx === -1) return;
+      if (!confirm('削除しますか？')) return;
+      rememberForUndo('ノートの削除');
+      appNotes.splice(idx, 1); renderNotes(); syncToServer();
+      offerUndo('ノートを削除しました');
+    }
+
     function renderNotes() {
       const area = document.getElementById('noteListArea'); if (!area) return;
       const fYearSel = document.getElementById('filterNoteYear');
@@ -1163,19 +1534,20 @@
         else { const target = (fC && fC !== 'all' && fChildSel.style.display !== 'none') ? fC : fP; filtered = filtered.filter(function(n) { return (n.folder || "未分類") === target; }); }
       }
       if (filtered.length === 0) { area.innerHTML = '<p style="text-align:center; color:#666;">ノートはありません。</p>'; return; }
+      filtered = sortNotesByDateDesc(filtered);
       area.innerHTML = filtered.map(function(n) {
         let folderColor = '#ccc';
         const details = getYearlyDetails(n.year);
         if (details && details[n.folder] && details[n.folder].color) { folderColor = details[n.folder].color; }
-        return `<div style="background:#faf9f6; padding:12px; border-left:5px solid ${folderColor}; margin-bottom:8px; border-radius:4px; border:1px solid #e8e6e1;">
+        return `<div style="background:#faf9f6; padding:12px; border-left:5px solid ${safeColor(folderColor)}; margin-bottom:8px; border-radius:4px; border:1px solid #e8e6e1;">
           <div style="font-size:0.75rem; color:#7a6a58; display:flex; justify-content:space-between; align-items:center; border-bottom:1px dashed #d3c5b5; padding-bottom:4px; margin-bottom:6px;">
-            <span>🕒 ${n.date} ｜ ${getFolderBreadcrumbHTML(n.folder, n.year)}</span>
+            <span>🕒 ${escapeHTML(n.date)} ｜ ${getFolderBreadcrumbHTML(n.folder, n.year)}</span>
             <div style="display:flex; gap:5px;">
-              <button class="btn-delete" style="color:#7a6a58;" onclick="editNote(${n.id})">✏️</button>
-              <button class="btn-delete" onclick="if(confirm('削除しますか？')){appNotes.splice(appNotes.findIndex(function(x){return x.id === ${n.id};}), 1);renderNotes();syncToServer();}">🗑️</button>
+              <button class="btn-delete" style="color:#7a6a58;" data-id="${escapeHTML(String(n.id))}" onclick="editNote(this.dataset.id)">✏️</button>
+              <button class="btn-delete" data-id="${escapeHTML(String(n.id))}" onclick="deleteNote(this.dataset.id)">🗑️</button>
             </div>
           </div>
-          <div style="font-size:0.85rem; color:#333; white-space:pre-wrap;">${escapeHTML(n.content)}</div>
+          <div style="font-size:0.85rem; color:#333; white-space:pre-wrap;">${formatNoteContent(n.content)}</div>
           ${generateAttachmentLinksHTML(n.attachments)}
         </div>`;
       }).join('');
@@ -1190,7 +1562,7 @@
       let h = `<html><head><title>ノート出力</title><style>body{font-family:'BIZ UDPGothic',sans-serif;padding:15mm;} .note{border-left:4px solid #7a6a58;padding:10px;margin-bottom:12px;} .meta{font-size:0.75rem;color:#666;margin-bottom:5px;} .content{font-size:0.9rem;white-space:pre-wrap;} @media print{button{display:none;}}</style></head><body>`;
       h += `<h2>クイックノート一覧</h2>`;
       filtered.forEach(function(n) {
-        h += `<div class="note"><div class="meta">${n.date} ｜ ${escapeHTML(n.folder||'未分類')}</div><div class="content">${escapeHTML(n.content)}</div></div>`;
+        h += `<div class="note"><div class="meta">${escapeHTML(n.date)} ｜ ${escapeHTML(n.folder||'未分類')}</div><div class="content">${escapeHTML(n.content)}</div></div>`;
       });
       h += `<button onclick="window.print()">印刷</button></body></html>`;
       win.document.write(h); win.document.close();
@@ -1216,21 +1588,24 @@
         const dayNames = ['月','火','水','木','金','土','日'];
         document.getElementById('inputModalTitle').innerText = dayNames[day] + "曜 " + (period==='morning' ? '朝自習' : period+'時間目');
         document.getElementById('recordLabel').innerText = "指導記録・所感（印刷されません）";
-        document.getElementById('inputSubject').value = data.subject || "";
+        setSelectValue(document.getElementById('inputSubject'), data.subject);   // リストに無い教科でも消えないようにする
         document.getElementById('inputUnit').value = data.unit || "";
         document.getElementById('checkSplit').checked = !!data.isSplit;
-        document.getElementById('inputSubject2').value = data.subject2 || "";
+        setSelectValue(document.getElementById('inputSubject2'), data.subject2);
         document.getElementById('inputUnit2').value = data.unit2 || "";
         toggleSplitUI();
       }
       renderEditorAttachments();
+      updatePasteButton();
       document.getElementById('inputModal').style.display = 'flex';
     }
 
-    function saveInputData() {
-      const key = getDataKey(currentEditDayIndex, currentEditPeriod);
+    function isMemoPeriod(p) { return ['gyoji','renraku','shidou','kaigi'].includes(String(p)); }
+
+    // 入力モーダルの内容をデータの形にまとめる（すべて空なら null）
+    function collectInputForm(period) {
       let entry;
-      if (['gyoji','renraku','shidou','kaigi'].includes(currentEditPeriod)) {
+      if (isMemoPeriod(period)) {
         entry = { record: document.getElementById('inputRecord').value, attachments: [...currentAttachments] };
         if (!entry.record.trim() && entry.attachments.length === 0) entry = null;
       } else {
@@ -1246,16 +1621,55 @@
         };
         if (!entry.subject && !entry.unit.trim() && !entry.contact.trim() && !entry.record.trim() && !entry.subject2 && !entry.unit2.trim() && entry.attachments.length === 0) entry = null;
       }
+      return entry;
+    }
+
+    function saveInputData() {
+      const key = getDataKey(currentEditDayIndex, currentEditPeriod);
+      const entry = collectInputForm(currentEditPeriod);
       if (entry) { appData[key] = entry; } else { delete appData[key]; }
-      renderCell(currentEditDayIndex, currentEditPeriod); closeInputModal(); syncToServer();
+      renderCell(currentEditDayIndex, currentEditPeriod); updateWeeklyCount(); closeInputModal(); syncToServer();
     }
 
     function deleteInputData() {
       const key = getDataKey(currentEditDayIndex, currentEditPeriod);
       if (!appData[key]) { closeInputModal(); return; }
       if (!confirm("この枠の内容（教科・記録・添付など）をすべて削除しますか？")) return;
+      rememberForUndo('枠の削除');
       delete appData[key];
-      renderCell(currentEditDayIndex, currentEditPeriod); closeInputModal(); syncToServer();
+      renderCell(currentEditDayIndex, currentEditPeriod); updateWeeklyCount(); closeInputModal(); syncToServer();
+      offerUndo('枠の内容を削除しました');
+    }
+
+    // ----- コマのコピー＆貼り付け（iPad などドラッグ操作が使えない端末向け） -----
+    function copyCurrentCell() {
+      const entry = collectInputForm(currentEditPeriod);
+      if (!entry) { alert("コピーする内容がありません。"); return; }
+      cellClipboard = { isMemo: isMemoPeriod(currentEditPeriod), entry: JSON.parse(JSON.stringify(entry)) };
+      updatePasteButton();
+      showToast("このコマの内容をコピーしました。別のコマを開いて「貼り付け」できます", false);
+    }
+    function pasteIntoCurrentCell() {
+      if (!cellClipboard) return;
+      if (cellClipboard.isMemo !== isMemoPeriod(currentEditPeriod)) { alert("授業のコマと記録欄の間では貼り付けできません。"); return; }
+      const e = cellClipboard.entry;
+      if (!cellClipboard.isMemo) {
+        setSelectValue(document.getElementById('inputSubject'), e.subject);
+        document.getElementById('inputUnit').value = e.unit || "";
+        document.getElementById('inputContact').value = e.contact || "";
+        document.getElementById('checkSplit').checked = !!e.isSplit;
+        setSelectValue(document.getElementById('inputSubject2'), e.subject2);
+        document.getElementById('inputUnit2').value = e.unit2 || "";
+        toggleSplitUI();
+      }
+      document.getElementById('inputRecord').value = e.record || "";
+      currentAttachments = (e.attachments || []).map(function(a) { return Object.assign({}, a, { id: Date.now() + Math.random() }); });
+      renderEditorAttachments();
+      showToast("貼り付けました。「保存する」で確定します", false);
+    }
+    function updatePasteButton() {
+      const btn = document.getElementById('pasteCellBtn'); if (!btn) return;
+      btn.disabled = !(cellClipboard && cellClipboard.isMemo === isMemoPeriod(currentEditPeriod));
     }
 
     function openSearchModal() { document.getElementById('searchModal').style.display = 'flex'; }
@@ -1304,7 +1718,7 @@
               ${data.record ? `<div style="font-size:0.8rem; margin-top:4px; color:#555; white-space:pre-wrap;">${hl(data.record)}</div>` : ''}
               ${generateAttachmentLinksHTML(data.attachments)}
             </div>
-            <button class="btn-small" onclick="jumpToDate('${dStr}')">表示</button>
+            <button class="btn-small" data-date="${escapeHTML(dStr)}" data-period="${escapeHTML(per)}" onclick="jumpToDate(this.dataset.date, this.dataset.period)">表示</button>
           </div>`; c++;
         }
       });
@@ -1314,15 +1728,15 @@
     function openFolderModal() {
       document.getElementById('newFolderName').value='';
       document.querySelector('input[name="folderColor"][value="#e8e6e1"]').checked=true;
-      const y = appSettings.year || new Date().getFullYear().toString();
+      const y = currentSchoolYear();
       const pSel = document.getElementById('newFolderParent');
-      if (pSel) { pSel.innerHTML = '<option value="">（なし・一番上の階層）</option>' + getRootFolders(y).map(function(f){ return `<option value="${f}">${escapeHTML(f)}</option>`; }).join(''); }
+      if (pSel) { pSel.innerHTML = '<option value="">（なし・一番上の階層）</option>' + getRootFolders(y).map(function(f){ return `<option value="${escapeHTML(f)}">${escapeHTML(f)}</option>`; }).join(''); }
       document.getElementById('folderModal').style.display='flex';
     }
     function closeFolderModal() { document.getElementById('folderModal').style.display='none'; }
 
     function saveNewFolder() {
-      const y = appSettings.year || new Date().getFullYear().toString();
+      const y = currentSchoolYear();
       const n = document.getElementById('newFolderName').value.trim();
       const p = document.getElementById('newFolderParent').value;
       const colorRadio = document.querySelector('input[name="folderColor"]:checked');
@@ -1339,7 +1753,7 @@
     }
 
     function deleteCurrentFolder() {
-      const y = appSettings.year || new Date().getFullYear().toString();
+      const y = currentSchoolYear();
       const p = document.getElementById('newNoteFolderParent').value;
       const c = document.getElementById('newNoteFolderChild');
       let t = (c && c.style.display !== 'none' && c.value) ? c.value : p;
@@ -1348,15 +1762,98 @@
       let confirmMsg = `フォルダ「${t}」を削除しますか？\n中のノートは「未分類」に移動されます。`;
       if(childs.length > 0) confirmMsg = `フォルダ「${t}」とサブフォルダをすべて削除しますか？\n中のノートはすべて「未分類」に移動されます。`;
       if(!confirm(confirmMsg)) return;
+      rememberForUndo('フォルダの削除');
       const dels = [t, ...childs];
       appNotes.forEach(function(n) { if(n.year === y && dels.includes(n.folder || '未分類')) n.folder = '未分類'; });
       appSettings.foldersByYear[y] = appSettings.foldersByYear[y].filter(function(f) { return !dels.includes(f); });
       dels.forEach(function(f) { delete appSettings.folderDetailsByYear[y][f]; });
       updateNoteFolderSelects(); renderNotes(); syncToServer();
+      offerUndo(`フォルダ「${t}」を削除しました`);
     }
 
     function escapeHTML(s) { return s ? String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&#39;') : ''; }
     function safeUrl(u) { const s = String(u || '').trim(); return /^https?:\/\//i.test(s) ? s : '#'; }
+    function safeColor(c) { const s = String(c || '').trim(); return /^#[0-9a-fA-F]{3,8}$/.test(s) ? s : '#e8e6e1'; }
+    // 年度を求める（1〜3月は前年の年度）
+    function getSchoolYear(date) { const m = date.getMonth() + 1; const y = date.getFullYear(); return String(m <= 3 ? y - 1 : y); }
+    function currentSchoolYear() { return appSettings.year || getSchoolYear(new Date()); }
+    function dateOfWeek(d) { const dt = new Date(currentMonday); dt.setDate(dt.getDate() + d); return dt; }
+    function isNonSchoolDay(dateStr) { return !!holidaysData[dateStr] || !!getHolidayPeriodName(dateStr); }
+    // セレクトに無い値でも消えないよう、必要なら選択肢を追加してから値をセットする
+    function setSelectValue(sel, val) {
+      if (!sel) return;
+      const v = val || "";
+      if (v && !Array.from(sel.options).some(function(o) { return o.value === v; })) {
+        const opt = document.createElement('option'); opt.value = v; opt.textContent = v + '（リスト外）'; sel.appendChild(opt);
+      }
+      sel.value = v;
+    }
+    function sortNotesByDateDesc(notes) {
+      return notes.slice().sort(function(a, b) { return String(b.date || '').localeCompare(String(a.date || '')); });
+    }
+    // ノート本文：HTMLエスケープした上で、URLだけリンクにする
+    function formatNoteContent(text) {
+      const s = String(text || '');
+      const urlRe = /https?:\/\/[^\s<>"'）」』】]+/g;
+      let out = '', last = 0, m;
+      while ((m = urlRe.exec(s)) !== null) {
+        out += escapeHTML(s.substring(last, m.index));
+        out += `<a class="note-link" href="${escapeHTML(m[0])}" target="_blank" rel="noopener">${escapeHTML(m[0])}</a>`;
+        last = m.index + m[0].length;
+      }
+      return out + escapeHTML(s.substring(last));
+    }
+    function countWeekLessons() {
+      let total = 0, morning = 0;
+      for (let d = 0; d < 7; d++) {
+        [1,2,3,4,5,6].forEach(function(p) { const data = appData[getDataKey(d, p)]; if (data && (data.subject || (data.isSplit && data.subject2))) total++; });
+        const m = appData[getDataKey(d, 'morning')]; if (m && m.subject) morning++;
+      }
+      return { total: total, morning: morning };
+    }
+    function updateWeeklyCount() {
+      const el = document.getElementById('weeklyCount'); if (!el) return;
+      const c = countWeekLessons();
+      let text = `この週の授業：${c.total}コマ`;
+      if (getConfig().countMorning && c.morning) text += `　＋ 朝自習 ${c.morning}回（${(c.morning / 3).toFixed(1)}時間として集計）`;
+      el.innerText = text;
+    }
+    function updateHeaderTitle() {
+      const el = document.getElementById('displayClassInfo'); if (!el) return;
+      const c = getConfig();
+      el.innerText = `${currentSchoolYear()}年度 ${c.grade || "5"}年${c.className || ""} 週案`;
+    }
+    // 新年度になっていたら、設定の年度を切り替えるか確認する（年度末〜4月の切替忘れ防止）
+    function checkSchoolYearRollover() {
+      const nowYear = getSchoolYear(new Date());
+      const setYear = String(appSettings.year || '');
+      if (!/^\d{4}$/.test(setYear) || parseInt(setYear, 10) >= parseInt(nowYear, 10)) return;
+      if (appSettings.yearRolloverDismissed === nowYear) return;
+      const ok = confirm(`${nowYear}年度になっています。\n設定の年度を ${setYear}年度 → ${nowYear}年度 に切り替えますか？\n\n・ノートのフォルダ構成は新年度に引き継がれます\n・学年・組・学期の期間は、続けて開く設定画面で確認してください\n（「キャンセル」を選ぶと、今年度はこの確認を表示しません）`);
+      if (ok) { switchSchoolYear(nowYear); openSettingModal(); }
+      else { appSettings.yearRolloverDismissed = nowYear; syncToServer(); }
+    }
+    // 年度を切り替える。新しい年度に設定が無ければ、ノートのフォルダ構成を前の年度から引き継ぐ
+    function switchSchoolYear(newYear) {
+      const prevYear = currentSchoolYear();
+      const isNew = !appSettings.configByYear || !appSettings.configByYear[newYear];
+      appSettings.year = newYear;
+      ensureYearDefaults(newYear);
+      if (isNew && prevYear !== newYear) carryOverFolders(prevYear, newYear);
+      const yearInput = document.getElementById('setYear'); if (yearInput) yearInput.value = newYear;
+      updateSubjectDropdown(); changeSettingYear(); updateHeaderTitle();
+      if (document.getElementById('cell-0-1')) updateView();
+      syncToServer();
+    }
+    function carryOverFolders(fromYear, toYear) {
+      const folders = appSettings.foldersByYear && appSettings.foldersByYear[fromYear];
+      const details = appSettings.folderDetailsByYear && appSettings.folderDetailsByYear[fromYear];
+      if (!folders || folders.length === 0) return;
+      appSettings.foldersByYear[toYear] = JSON.parse(JSON.stringify(folders));
+      appSettings.folderDetailsByYear[toYear] = JSON.parse(JSON.stringify(details || {}));
+      if (!appSettings.foldersByYear[toYear].includes('未分類')) appSettings.foldersByYear[toYear].unshift('未分類');
+      if (!appSettings.folderDetailsByYear[toYear]['未分類']) appSettings.folderDetailsByYear[toYear]['未分類'] = { color: "#e8e6e1", parent: "" };
+    }
     function fmtDate(d) { return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`; }
     function getYearlyFolders(y) { return appSettings.foldersByYear[y] || []; }
     function getYearlyDetails(y) { return appSettings.folderDetailsByYear[y] || {}; }
@@ -1371,9 +1868,9 @@
       const folders = getYearlyFolders(year);
       if (fDetail.parent && folders.includes(fDetail.parent)) {
         const pDetail = details[fDetail.parent] || {};
-        html += `<span style="background:${pDetail.color||'#e8e6e1'}; padding:2px 6px; border-radius:4px; font-size:0.7rem; color:#333; margin-right:4px;">${escapeHTML(fDetail.parent)}</span> ＞ `;
+        html += `<span style="background:${safeColor(pDetail.color)}; padding:2px 6px; border-radius:4px; font-size:0.7rem; color:#333; margin-right:4px;">${escapeHTML(fDetail.parent)}</span> ＞ `;
       }
-      html += `<span style="background:${fDetail.color||'#e8e6e1'}; padding:2px 6px; border-radius:4px; font-size:0.75rem; color:#333; font-weight:bold;">${escapeHTML(folderName)}</span>`;
+      html += `<span style="background:${safeColor(fDetail.color)}; padding:2px 6px; border-radius:4px; font-size:0.75rem; color:#333; font-weight:bold;">${escapeHTML(folderName)}</span>`;
       return html;
     }
 
@@ -1382,18 +1879,18 @@
       return `${date.getFullYear()}-${String(date.getMonth()+1).padStart(2,'0')}-${String(date.getDate()).padStart(2,'0')}-${p}`;
     }
 
-    function closeInputModal() { document.getElementById('inputModal').style.display = 'none'; }
+    function closeInputModal() { document.getElementById('inputModal').style.display = 'none'; currentAttachments = []; }
     function toggleSplitUI() { const split = document.getElementById('checkSplit').checked; document.getElementById('splitUI').style.display = split ? 'block' : 'none'; document.getElementById('labelSub1').innerText = split ? '教科 1' : '教科'; }
 
     function updateSubjectDropdown() {
       const conf = getConfig();
       const subs = Object.keys(standardHoursData[conf.grade] || standardHoursData["5"]);
-      const others = ["学活１","学活２","学活３","児童会活動","クラブ活動","学校行事","その他"];
+      const others = ["学活","学活１","学活２","学活３","児童会活動","クラブ活動","学校行事","その他"];
       const html = '<option value="">選択...</option>' + subs.concat(others).map(function(s){ return `<option value="${s}">${s}</option>`; }).join('');
       const selects = [];
       ['inputSubject','inputSubject2'].forEach(function(id) { const el = document.getElementById(id); if(el) selects.push(el); });
       for(let d=0; d<5; d++) { for(let p=1; p<=6; p++) { const el = document.getElementById(`base-${d}-${p}`); if(el) selects.push(el); } }
-      selects.forEach(function(sel) { const val = sel.value; sel.innerHTML = html; sel.value = val; });
+      selects.forEach(function(sel) { const val = sel.value; sel.innerHTML = html; setSelectValue(sel, val); });
     }
 
     function toggleTermUI() {
@@ -1451,29 +1948,38 @@
         }
       }
       ['gyoji','morning',1,2,3,4,5,6,'renraku','shidou','kaigi'].forEach(function(p) { for(let d=0; d<7; d++) { renderCell(d, p); } });
+      updateWeeklyCount();
     }
 
     function renderCell(dIdx, p) {
       const cell = document.getElementById(`cell-${dIdx}-${p}`); if (!cell) return;
-      const data = appData[getDataKey(dIdx, p)];
+      const key = getDataKey(dIdx, p);
+      const data = appData[key];
       const cellDate = new Date(currentMonday); cellDate.setDate(cellDate.getDate() + dIdx);
       cell.className = fmtDate(cellDate) === fmtDate(new Date()) ? "today-cell" : "";
       cell.innerHTML = "";
       let badge = (data && data.attachments && data.attachments.length > 0) ? `<div class="attachment-badge">📎${data.attachments.length}</div>` : "";
-      if (!data || (!data.subject && !data.record && !data.contact && !badge)) {
-        cell.innerHTML = `<div class="cell-content" draggable="true" ondragstart="handleDragStart(event, '${getDataKey(dIdx, p)}')"><div class="subject-tag empty">未設定</div></div>`; return;
+      const hasLessonText = !!(data && (data.subject || data.unit || data.subject2 || data.unit2));
+      if (!data || (!hasLessonText && !data.record && !data.contact && !badge)) {
+        // 空のコマはドラッグ元にしない（空をドロップして相手側を消す事故を防ぐ）
+        cell.innerHTML = `<div class="cell-content not-draggable"><div class="subject-tag empty">未設定</div></div>`; return;
       }
-      if (['gyoji','renraku','shidou','kaigi'].includes(p)) {
-        cell.innerHTML = `<div class="cell-content" draggable="true" ondragstart="handleDragStart(event, '${getDataKey(dIdx, p)}')"><div class="long-memo">${escapeHTML(data.record)}</div>${badge}</div>`;
+      const dragAttr = `draggable="true" ondragstart="handleDragStart(event, '${key}')"`;
+      if (isMemoPeriod(p)) {
+        cell.innerHTML = `<div class="cell-content" ${dragAttr}><div class="long-memo">${escapeHTML(data.record)}</div>${badge}</div>`;
       } else if (data.isSplit) {
         let splitHTML = `<div class="split-half" style="border-bottom:1px dashed #ccc; width:100%;"><div class="subject-tag ${subjectColors[data.subject]||'color-other'}">${escapeHTML(data.subject)}</div><div class="memo">${escapeHTML(data.unit)}</div></div><div class="split-half" style="width:100%;"><div class="subject-tag ${subjectColors[data.subject2]||'color-other'}">${escapeHTML(data.subject2)}</div><div class="memo">${escapeHTML(data.unit2)}</div></div>`;
         if (data.contact) { splitHTML += `<div class="memo" style="color:#0055cc;">${escapeHTML(data.contact)}</div>`; }
-        cell.innerHTML = `<div class="cell-content" draggable="true" ondragstart="handleDragStart(event, '${getDataKey(dIdx, p)}')">${splitHTML}${badge}</div>`;
+        cell.innerHTML = `<div class="cell-content" ${dragAttr}>${splitHTML}${badge}</div>`;
       } else {
         let memoHTML = escapeHTML(data.unit) || "";
         if (data.contact) memoHTML += (memoHTML ? "<br>" : "") + `<span style="color:#0055cc;">${escapeHTML(data.contact)}</span>`;
         if (data.record) memoHTML += (memoHTML ? "<br>" : "") + `<span style="color:#666;">${escapeHTML(data.record)}</span>`;
-        cell.innerHTML = `<div class="cell-content" draggable="true" ondragstart="handleDragStart(event, '${getDataKey(dIdx, p)}')"><div class="subject-tag ${subjectColors[data.subject]||'color-other'}">${escapeHTML(data.subject)}</div><div class="memo">${memoHTML}</div>${badge}</div>`;
+        // 教科が未選択でも単元名などが入っていれば見えるようにする（以前は「未設定」と表示され入力が隠れていた）
+        const tagHTML = data.subject
+          ? `<div class="subject-tag ${subjectColors[data.subject]||'color-other'}">${escapeHTML(data.subject)}</div>`
+          : `<div class="subject-tag empty">教科未選択</div>`;
+        cell.innerHTML = `<div class="cell-content" ${dragAttr}>${tagHTML}<div class="memo">${memoHTML}</div>${badge}</div>`;
       }
     }
 
@@ -1504,7 +2010,7 @@
       tbody.innerHTML = html;
     }
 
-    function toggleWeekend() { showWeekend = !showWeekend; applyWeekendDisplay(); }
+    function toggleWeekend() { showWeekend = !showWeekend; applyWeekendDisplay(); try { localStorage.setItem('weeklyPlan_showWeekend', showWeekend ? '1' : '0'); } catch (e) {} }
     function applyWeekendDisplay() {
       const ds = showWeekend ? "table-cell" : "none";
       const th5 = document.getElementById('th-5'); if(th5) th5.style.display = ds;
@@ -1522,14 +2028,16 @@
 
     function calculateTotalHours() {
       const conf = getConfig();
-      const targetYearStr = appSettings.year || new Date().getFullYear().toString();
+      const targetYearStr = currentSchoolYear();
       const targetYearNum = parseInt(targetYearStr, 10);
       const yearStart = `${targetYearNum}-04-01`;
       const yearEnd = `${targetYearNum + 1}-03-31`;
       const displayGrade = document.getElementById('summaryGradeDisplay');
       if(displayGrade) { displayGrade.innerText = `${targetYearStr}年度 ${conf.grade}年の標準時数`; }
-      const standard = standardHoursData[conf.grade] || standardHoursData["5"];
-      const displaySubs = Object.keys(standard);
+      const gradeStandard = standardHoursData[conf.grade] || standardHoursData["5"];
+      // 学活（特別活動）も標準時数を持たせて「残り」「達成率」を出す
+      const standard = Object.assign({}, gradeStandard, { "学活": specialActivityHours[conf.grade] || 35 });
+      const displaySubs = Object.keys(gradeStandard);
       displaySubs.push("学活", "児童会活動", "クラブ活動", "学校行事", "その他");
       const totals = {};
       displaySubs.forEach(function(sub) { totals[sub] = { term1: 0, term2: 0, term3: 0, total: 0, weekly: 0 }; });
@@ -1560,13 +2068,13 @@
       const fH = function(num) { return (!num) ? "0" : (Math.abs(num - Math.round(num)) < 0.01) ? Math.round(num).toString() : num.toFixed(1); };
       lastSummary = { gradeStr: `${targetYearStr}年度 ${conf.grade}年`, termType: conf.termType, subs: displaySubs, totals: totals, standard: standard, fH: fH };
       const table = document.getElementById('summaryTableElement');
-      let html = "<thead><tr><th>教科</th><th style='background:#fff9c4; color:#d4a017;'>今週</th>";
+      let html = "<thead><tr><th>教科</th><th style='background:#fff9c4; color:#d4a017;'>表示中の週</th>";
       if (conf.termType === "3") { html += "<th>1学期</th><th>2学期</th><th>3学期</th>"; } else { html += "<th>前期</th><th>後期</th>"; }
       html += "<th>年間 (合計/標準)</th><th>残り</th><th>達成率</th></tr></thead><tbody>";
       displaySubs.forEach(function(sub) {
-        let stdText = standard[sub] ? ` / ${standard[sub]}` : " / -";
-        if (sub === "学活") stdText = " / (※特活 35)";
-        html += `<tr><td style="font-weight:bold;">${escapeHTML(sub)}</td><td style='background:#fff9c4; font-weight:bold;'>${fH(totals[sub].weekly)}</td>`;
+        const stdText = standard[sub] ? ` / ${standard[sub]}` : " / -";
+        const subLabel = escapeHTML(sub) + (sub === "学活" ? '<span style="font-weight:normal; font-size:0.75rem; color:#7a6a58;">（特活）</span>' : '');
+        html += `<tr><td style="font-weight:bold;">${subLabel}</td><td style='background:#fff9c4; font-weight:bold;'>${fH(totals[sub].weekly)}</td>`;
         if (conf.termType === "3") { html += `<td>${fH(totals[sub].term1)}</td><td>${fH(totals[sub].term2)}</td><td>${fH(totals[sub].term3)}</td>`; }
         else { html += `<td>${fH(totals[sub].term1)}</td><td>${fH(totals[sub].term2)}</td>`; }
         html += `<td style="font-weight:bold; color:#cc0033;">${fH(totals[sub].total)}${stdText}</td>`;
@@ -1590,7 +2098,7 @@
       const s = lastSummary;
       const termHeads = s.termType === "3" ? ["1学期", "2学期", "3学期"] : ["前期", "後期"];
       const termKeys = s.termType === "3" ? ["term1", "term2", "term3"] : ["term1", "term2"];
-      const rows = [["教科", "今週"].concat(termHeads, ["年間合計", "標準時数", "残り", "達成率(%)"])];
+      const rows = [["教科", "表示中の週"].concat(termHeads, ["年間合計", "標準時数", "残り", "達成率(%)"])];
       s.subs.forEach(function(sub) {
         const t = s.totals[sub];
         const std = s.standard[sub] || "";
@@ -1782,6 +2290,7 @@ ${lines.join("\n")}
           const obj = JSON.parse(e.target.result);
           if (!obj || (!obj.data && !obj.settings && !obj.notes)) { throw new Error("週案アプリのバックアップ形式ではありません"); }
           if (!confirm("バックアップを読み込みます。\n同じ日付・年度のデータは上書きされます（現在のデータと統合します）。\nよろしいですか？")) { event.target.value = ''; return; }
+          rememberForUndo('バックアップの読み込み');
           if (obj.settings) {
             if (obj.settings.configByYear) appSettings.configByYear = Object.assign({}, appSettings.configByYear, obj.settings.configByYear);
             if (obj.settings.foldersByYear) appSettings.foldersByYear = Object.assign({}, appSettings.foldersByYear, obj.settings.foldersByYear);
@@ -1795,10 +2304,13 @@ ${lines.join("\n")}
               if (idx === -1) appNotes.push(nn); else appNotes[idx] = nn;
             });
           }
-          const y = appSettings.year || new Date().getFullYear().toString();
+          if (!appSettings.year) appSettings.year = getSchoolYear(new Date());
+          const y = currentSchoolYear();
+          ensureYearDefaults(y);
+          normalizeLoadedData(y);
           const yearEl = document.getElementById('setYear'); if (yearEl) yearEl.value = y;
-          changeSettingYear(); updateSubjectDropdown(); updateView(); syncToServer();
-          alert("読み込みが完了しました ✅");
+          updateSubjectDropdown(); changeSettingYear(); updateHeaderTitle(); updateView(); syncToServer();
+          offerUndo("バックアップを読み込みました ✅");
         } catch (err) {
           alert("読み込みに失敗しました：" + err.message);
         } finally {
@@ -1808,7 +2320,11 @@ ${lines.join("\n")}
       reader.readAsText(file, 'utf-8');
     }
 
-    function openSettingModal() { changeSettingYear(); document.getElementById('settingModal').style.display = 'flex'; }
+    function openSettingModal() {
+      const yearEl = document.getElementById('setYear'); if (yearEl) yearEl.value = currentSchoolYear();
+      changeSettingYear();
+      document.getElementById('settingModal').style.display = 'flex';
+    }
     function closeSettingModal() { document.getElementById('settingModal').style.display = 'none'; }
 
     function copyPreviousUnit(idx) {
@@ -1829,8 +2345,13 @@ ${lines.join("\n")}
 
     function saveSettings() {
       const yearEl = document.getElementById('setYear'); if (!yearEl) return;
-      const y = yearEl.value; appSettings.year = y;
+      const y = String(yearEl.value || "").trim();
+      if (!/^\d{4}$/.test(y) || parseInt(y, 10) < 2000 || parseInt(y, 10) > 2100) { alert("年度は4桁の西暦（例：2026）で入力してください。"); yearEl.focus(); return; }
+      const prevYear = currentSchoolYear();
+      const isNewYear = !appSettings.configByYear || !appSettings.configByYear[y];
+      appSettings.year = y;
       ensureYearDefaults(y);
+      if (isNewYear && prevYear !== y) carryOverFolders(prevYear, y);   // 新しい年度にはフォルダ構成を引き継ぐ
       const c = appSettings.configByYear[y];
       c.grade = document.getElementById('setGrade') ? document.getElementById('setGrade').value : "5";
       c.className = document.getElementById('setClass') ? document.getElementById('setClass').value : "";
@@ -1842,9 +2363,7 @@ ${lines.join("\n")}
       });
       if (!c.baseTimetable) c.baseTimetable = {};
       for(let d=0; d<5; d++) { for(let p=1; p<=6; p++) { const el = document.getElementById(`base-${d}-${p}`); if(el) c.baseTimetable[`${d}-${p}`] = el.value; } }
-      const displayClass = document.getElementById('displayClassInfo');
-      if (displayClass) displayClass.innerText = `${y}年度 ${c.grade}年${c.className} 週案`;
-      updateSubjectDropdown(); updateView(); closeSettingModal(); syncToServer();
+      updateSubjectDropdown(); updateHeaderTitle(); updateView(); closeSettingModal(); syncToServer();
     }
 
     function changeSettingYear() {
@@ -1861,10 +2380,8 @@ ${lines.join("\n")}
         const el = document.getElementById(f); if (el) el.value = c[f] || "";
       });
       if (c.baseTimetable) {
-        for(let d=0; d<5; d++) { for(let p=1; p<=6; p++) { const el = document.getElementById(`base-${d}-${p}`); if(el) el.value = c.baseTimetable[`${d}-${p}`] || ""; } }
+        for(let d=0; d<5; d++) { for(let p=1; p<=6; p++) { const el = document.getElementById(`base-${d}-${p}`); if(el) setSelectValue(el, c.baseTimetable[`${d}-${p}`]); } }
       }
-      const displayClass = document.getElementById('displayClassInfo');
-      if (displayClass) displayClass.innerText = `${y}年度 ${c.grade || "5"}年${c.className || ""} 週案`;
     }
   </script>
 </body>
