@@ -1,0 +1,17 @@
+{
+  "name": "shuan-sakusei-kun-reel",
+  "private": true,
+  "version": "1.0.0",
+  "description": "週案作成くん のインスタ用PR動画（Remotion・9:16）",
+  "scripts": {
+    "render": "remotion render src/index.ts reel out/reel.mp4 --browser-executable=/opt/pw-browsers/chromium_headless_shell-1194/chrome-linux/headless_shell --concurrency=2",
+    "still": "remotion still src/index.ts reel out/still.png --browser-executable=/opt/pw-browsers/chromium_headless_shell-1194/chrome-linux/headless_shell",
+    "studio": "remotion studio src/index.ts"
+  },
+  "dependencies": {
+    "@remotion/cli": "^4.0.0",
+    "remotion": "^4.0.0",
+    "react": "^18.0.0",
+    "react-dom": "^18.0.0"
+  }
+}
