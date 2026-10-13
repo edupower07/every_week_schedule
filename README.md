@@ -11,6 +11,7 @@
 | `index.html` | 画面側。HTML・CSS・JavaScript をひとつにまとめたシングルページ |
 | `test/server.test.js` | `Code.gs` のロジックを GAS サービスのモックで検証する Node のテスト |
 | `test/browser.test.js` | `index.html` を Playwright で動かして主要な流れを検証するテスト |
+| `promo/` | インスタ告知用のPR動画（Remotion）・カバー画像・投稿文。作り方は `promo/README.md` |
 
 ## デプロイ手順
 
